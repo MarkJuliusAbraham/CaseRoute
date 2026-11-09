@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CaseRoute · Traffic generator</title><script type="module" src="/src/main.js"></script></head>
+<body>
+<header><a href="/" class="brand">CaseRoute <span>/ Traffic generator</span></a><span id="connection">Local environment</span></header>
+<main id="service-connections">
+<div class="workspace">
+<aside class="setup" aria-label="Service configuration">
+<section class="service-section" aria-labelledby="generator-title">
+<div class="service-section-heading"><h2 id="generator-title">Generator settings</h2><div class="service-badge" data-service="generator"><span class="health-dot" aria-hidden="true"></span><span data-health-label role="status">Checking...</span></div></div>
+<p class="note">Controls how the client sends traffic.</p>
+<form id="run-form">
+<label for="rate">Requests per minute</label><input id="rate" name="requestsPerMinute" type="number" min="1" max="1000000" value="50" required>
+<div class="rate-presets" role="group" aria-label="Rate presets"><button type="button" data-rate-preset="10000" aria-pressed="false">10k</button><button type="button" data-rate-preset="50000" aria-pressed="false">50k</button><button type="button" data-rate-preset="100000" aria-pressed="false">100k</button></div>
+<label for="duration">Duration in minutes</label><input id="duration" name="durationMinutes" type="number" min="1" max="60" value="1" required>
+<label class="limit-toggle" for="unlimited"><input id="unlimited" type="checkbox" checked>No in-flight limit</label>
+<div id="capacity-field" hidden><label for="capacity">Maximum in flight</label><input id="capacity" name="maxInFlight" type="number" min="1" max="500" value="20" aria-describedby="capacity-help"></div>
+<p id="capacity-help" class="note">Generator concurrency: submissions waiting for an HTTP response. This is not a backend limit. No limit keeps tracking responses while allowing any number of pending requests.</p>
+<p id="estimate">50 planned submissions</p><p class="note">Up to 1,000,000 requests/min; at most 1,000,000 submissions per run.</p>
+</form>
+</section>
+<section class="service-section backend-section" aria-labelledby="backend-title">
+<div class="service-section-heading"><h2 id="backend-title">Backend</h2><div class="service-badge" data-service="backend"><span class="health-dot" aria-hidden="true"></span><span data-health-label role="status">Checking...</span></div></div>
+<p class="note">Receives cases and saves them in PostgreSQL. The status includes database health.</p>
+<div class="mode-controls"><h3>Write path</h3><label class="limit-toggle" for="use-kafka"><input id="use-kafka" type="checkbox" checked aria-describedby="mode-help">Buffer writes through Kafka</label>
+<p id="mode-help" class="note">On: the generator calls POST /api/cases, which stores each submission in Kafka and replies 202; a consumer saves it to PostgreSQL in batches. Off: it calls POST /api/cases/direct, which saves to PostgreSQL before replying 201. Applies to the next run, so runs can be compared.</p></div>
+<div class="reset-controls"><h3>Database reset</h3><p class="note">Delete saved cases before the next experiment. Tables and run reports are kept. Stop other clients first.</p><button id="clear-cases" class="danger-button" type="button" disabled>Clear saved cases</button><p id="reset-status" class="note" role="status">Checking service connections...</p></div>
+</section>
+</aside>
+<div class="monitor-column">
+<section class="run-controls" aria-labelledby="controls-title">
+<div class="section-heading"><h2 id="controls-title">Run controls</h2><span id="state" role="status">Ready</span></div>
+<div class="run-actions"><button id="start" type="submit" form="run-form" disabled>Start run</button><button id="stop" type="button" class="secondary" disabled>Stop scheduling</button></div>
+<p class="note">One run at a time. Stop ends new submissions and lets outstanding requests finish.</p>
+<p id="run-id" class="identifier">No run started.</p>
+<div class="inspect-actions" aria-label="Inspect run data"><span>Inspect data</span><button id="view-cases" type="button" class="secondary" aria-haspopup="dialog">Received cases</button><button id="view-responses" type="button" class="secondary" aria-haspopup="dialog">Recent responses</button><button id="view-health" type="button" class="secondary" aria-haspopup="dialog">Health history</button></div>
+</section>
+<section class="monitor" aria-labelledby="monitor-title"><h2 id="monitor-title">Live progress</h2>
+<section id="traffic-visualization" class="traffic" aria-labelledby="traffic-title">
+<div class="section-heading"><h3 id="traffic-title">Request pipeline</h3></div>
+<p class="traffic-status" data-traffic-status>Waiting for a run</p>
+<canvas role="img" aria-label="Request pipeline: Generator to Backend, then either through Kafka to PostgreSQL or directly to PostgreSQL. Counts show requests sent, accepted replies, messages waiting in Kafka, and cases saved."></canvas>
+<dl class="traffic-readouts"><div><dt>Observed requests / min</dt><dd data-rate>—</dd></div><div><dt>Configured requests / min</dt><dd data-target>—</dd></div><div><dt>In flight / capacity</dt><dd data-density>0 / —</dd></div><div><dt>Waiting in Kafka</dt><dd data-backlog>—</dd></div></dl>
+<meter data-capacity min="0" max="1" value="0" aria-label="Generator in-flight capacity utilization"></meter>
+
+<p class="note" data-chart-note>Animation only: dots show submission attempts, not measured travel or confirmed arrival. At high rates, dots represent groups.</p>
+<p class="note">Backend counts replies the generator accepted. PostgreSQL counts saved cases for this run, polled every second. Waiting in Kafka is accepted minus saved, so it is approximate.</p>
+</section>
+<dl class="metrics"><div><dt>Requests sent</dt><dd id="dispatched">0</dd></div><div><dt>Accepted replies</dt><dd id="accepted">0</dd></div><div><dt>Failed / mismatched</dt><dd id="failed">0</dd></div><div><dt>Outcome unknown</dt><dd id="unknown">0</dd></div><div><dt>Capacity skipped</dt><dd id="skipped">0</dd></div><div><dt>In flight</dt><dd id="inFlight">0</dd></div></dl>
+<label for="progress" id="progress-label">0 of 0 scheduled submissions accounted for</label><progress id="progress" max="1" value="0"></progress>
+<p id="not-sent"></p><p class="note">Accepted means a matching 202 (stored in Kafka) or 201 (saved directly) reply. With Kafka, the case reaches PostgreSQL shortly after. Timeouts may still have stored a case.</p>
+<a id="download" hidden>Download run report (.jsonl)</a>
+</section></div></div>
+<p id="error" role="alert" hidden></p>
+
+<dialog id="data-inspector" class="inspector" aria-labelledby="inspector-title">
+<div class="inspector-heading"><div><h2 id="inspector-title">Run data</h2><p>Saved cases and generator observations</p></div><button type="button" data-inspector-close aria-label="Close data inspector">Close</button></div>
+<div class="inspector-tabs" role="tablist" aria-label="Data views"><button id="cases-tab" type="button" role="tab" aria-controls="received-cases" aria-selected="true" tabindex="0">Received cases</button><button id="responses-tab" type="button" role="tab" aria-controls="recent-responses" aria-selected="false" tabindex="-1">Recent responses</button><button id="health-tab" type="button" role="tab" aria-controls="health-history" aria-selected="false" tabindex="-1">Health history</button></div>
+<section id="received-cases" class="inspector-panel case-report" role="tabpanel" aria-labelledby="cases-tab" tabindex="0" hidden>
+<div class="report-toolbar"><label>Show <select aria-label="Received case filter"><option value="all">All cases</option><option value="current" disabled>Current / latest run</option></select></label><button type="button" class="secondary" data-report-refresh>Refresh</button><a data-report-export>Download CSV</a></div>
+<p class="note">Saved records, not resolved cases. Run filters apply to new submissions carrying a testRunId. This view refreshes on demand.</p>
+<p data-report-status role="status">Open to read saved cases.</p>
+<div class="table-wrap"><table><thead><tr><th scope="col">Case ID</th><th scope="col">Client request ID</th><th scope="col">Subject</th><th scope="col">Status</th><th scope="col">Received at</th></tr></thead><tbody></tbody></table></div>
+<div class="report-pagination"><button type="button" class="secondary" data-report-previous>Previous</button><button type="button" class="secondary" data-report-next>Next</button></div>
+</section>
+<section id="recent-responses" class="inspector-panel" role="tabpanel" aria-labelledby="responses-tab" tabindex="0" hidden><p class="note">Latest 100 generator responses. Full history is available in the run report.</p><div class="table-wrap"><table><thead><tr><th scope="col">Client request ID</th><th scope="col">Outcome</th><th scope="col">HTTP</th><th scope="col">Latency</th><th scope="col">Schedule delay</th></tr></thead><tbody id="results"><tr><td colspan="5" class="empty">No requests sent yet.</td></tr></tbody></table></div></section>
+<section id="health-history" class="inspector-panel" role="tabpanel" aria-labelledby="health-tab" tabindex="0" hidden>
+<div class="report-toolbar"><label>Service <select data-history-service><option value="all">Both services</option><option value="generator">Generator</option><option value="backend">Backend + database</option></select></label><label class="history-change-filter"><input type="checkbox" data-history-changes> Status changes only</label><button type="button" class="secondary" data-history-export>Download JSON</button></div>
+<p class="note">Checks are observed from this browser while the dashboard is open. Red means a failed or unhealthy check, not proof the service process stopped. Gaps are not monitored. Latest 1,000 checks retained for up to 24 hours.</p>
+<div class="health-strips"><div><strong>Generator</strong><div data-health-strip="generator" class="health-strip" role="img"></div></div><div><strong>Backend + database</strong><div data-health-strip="backend" class="health-strip" role="img"></div></div><p class="note">Last 60 observations per service · older on the left · green: passed, red: failed. Bars are checks, not elapsed time.</p></div>
+<p data-history-summary class="note" role="status"></p>
+<div class="table-wrap"><table class="health-history-table"><thead><tr><th scope="col">Checked at</th><th scope="col">Service</th><th scope="col">Status</th><th scope="col">Check time</th><th scope="col">HTTP</th><th scope="col">Change</th><th scope="col">Detail</th></tr></thead><tbody></tbody></table></div>
+</section>
+</dialog>
+<dialog id="confirm-reset" class="confirm-dialog" aria-labelledby="confirm-reset-title" aria-describedby="confirm-reset-body">
+<form method="dialog">
+<h2 id="confirm-reset-title">Delete all saved cases?</h2>
+<p id="confirm-reset-body">This permanently deletes every case in the local CaseRoute database. Tables and run reports are kept. This cannot be undone.</p>
+<div class="confirm-actions"><button type="submit" value="cancel" class="secondary" autofocus>Cancel</button><button type="submit" value="confirm" class="danger-solid">Delete all cases</button></div>
+</form>
+</dialog>
+</main><footer>Runs target the backend configured on the generator server. Reports remain on disk; progress is retained in memory for the latest run.</footer>
+</body></html>

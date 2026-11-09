@@ -50,6 +50,10 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
         <dependency>
@@ -97,6 +101,11 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security-oauth2-resource-server-test</artifactId>
             <scope>test</scope>
         </dependency>
@@ -130,6 +139,11 @@
             <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -150,6 +164,15 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!-- Off: launch optimization adds -XX:TieredStopAtLevel=1 (no full JIT), which slows the backend under load. -->
+                    <optimizedLaunch>false</optimizedLaunch>
+                    <!-- Records every GC and safepoint pause to gc.log (rotated, 5 x 20 MB) to diagnose backend stalls.
+                         SafepointTimeout names any thread that takes over 500 ms to stop for a safepoint.
+                         -UseThreadPriorities runs all threads at normal OS priority (the Linux default); on Windows,
+                         Tomcat's lowest-priority utility threads were starved under load and stalled safepoints for seconds. -->
+                    <jvmArguments>-Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:+SafepointTimeout -XX:SafepointTimeoutDelay=500 -XX:-UseThreadPriorities</jvmArguments>
+                </configuration>
             </plugin>
         </plugins>
     </build>

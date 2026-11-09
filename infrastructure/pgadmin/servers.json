@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "CaseRoute PostgreSQL",
+      "Group": "CaseRoute",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "caseroutedb",
+      "Username": "caseroutedb",
+      "SSLMode": "prefer"
+    }
+  }
+}

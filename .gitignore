@@ -1,0 +1,29 @@
+# Generator run reports (can be hundreds of MB each). The generator writes them to reports/
+# relative to its working directory, which is the project root when run from IntelliJ.
+reports/
+
+# JVM diagnostics from load tests
+gc.log*
+*.jfr
+hs_err_pid*.log
+replay_pid*.log
+
+# Build output and dependencies (also covered per module)
+target/
+node_modules/
+dist/
+
+# Local environment overrides
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# OS and editor clutter
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+*.swp

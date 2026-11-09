@@ -1,0 +1,12 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Backend (GC logging)" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+    <option name="ENABLE_LAUNCH_OPTIMIZATION" value="false" />
+    <module name="backend" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="org.example.backend.BackendApplication" />
+    <option name="VM_PARAMETERS" value="-Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:+SafepointTimeout -XX:SafepointTimeoutDelay=500 -XX:-UseThreadPriorities" />
+    <option name="WORKING_DIRECTORY" value="file://$MODULE_WORKING_DIR$" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
