@@ -1,10 +1,50 @@
 import { TrafficModel, DeltaTracker, kafkaBacklog } from './traffic-model.js';
 
-const colors = { ink: '#192b2a', muted: '#4c615e', green: '#146650', kafka: '#2f6a88' };
-const TRAVEL_MS = 1400;
+const colors = {
+    ink: '#192b2a', muted: '#4c615e', line: '#9db6ab', idle: '#cfd8d3',
+    intake: '#146650', processing: '#2f6a88', kafkaSurface: '#eaf2f6',
+};
+const TRAVEL_MS = 1300;
 
-// Generator -> Backend -> Kafka -> PostgreSQL. In direct mode the Kafka stage is bypassed and
-// replies flow straight from the Backend to PostgreSQL.
+// The system as a graph. Nodes are services; edges are the paths data takes between them.
+//   Intake:     Generator -> Backend -> Kafka (cases.submitted) -> writer -> PostgreSQL
+//               (direct mode: Backend -> PostgreSQL)
+//   Processing: PostgreSQL outbox -> relay -> Kafka (cases.saved) -> Processor -> Kafka (cases.processed)
+//               -> backend writer -> PostgreSQL. The Processor only talks to Kafka.
+// Positions are fractions of the canvas, so the graph is laid out in two dimensions rather than one line.
+const LAYOUTS = {
+    wide: {
+        nodes: {
+            generator: [0.085, 0.55], backend: [0.33, 0.55], kafka: [0.60, 0.22],
+            database: [0.60, 0.80], processor: [0.895, 0.22],
+        },
+        size: [140, 92], kafkaSize: [176, 124],
+    },
+    // Column, then Processor and PostgreSQL side by side under Kafka. The direct-insert edge curves around Kafka.
+    narrow: {
+        nodes: {
+            generator: [0.50, 0.08], backend: [0.50, 0.28], kafka: [0.50, 0.53],
+            database: [0.76, 0.86], processor: [0.24, 0.86],
+        },
+        size: [136, 92], kafkaSize: [160, 122],
+        bends: { bypass: -62, toDatabase: -40, relay: 4, toProcessor: 28, results: 4 },
+        labelSides: { relay: -1 }, // keep the outbox relay label clear of the writers label
+        labelAt: { relay: .3, results: .72 }, // stagger the two middle labels vertically
+    },
+};
+
+// bend: sideways offset of the curve's midpoint, so opposite-direction edges between the same two nodes
+// sit side by side instead of on top of each other.
+const EDGES = [
+    { id: 'request', from: 'generator', to: 'backend', bend: 0, label: 'HTTP POST', kind: 'intake' },
+    { id: 'toKafka', from: 'backend', to: 'kafka', bend: -18, label: 'cases.submitted', kind: 'intake', mode: 'KAFKA' },
+    { id: 'bypass', from: 'backend', to: 'database', bend: 18, label: 'direct insert', kind: 'intake', mode: 'DIRECT' },
+    { id: 'toDatabase', from: 'kafka', to: 'database', bend: -34, label: 'writers', kind: 'intake' },
+    { id: 'relay', from: 'database', to: 'kafka', bend: -34, label: 'outbox relay', kind: 'processing' },
+    { id: 'toProcessor', from: 'kafka', to: 'processor', bend: -28, label: 'cases.saved', kind: 'processing' },
+    { id: 'results', from: 'processor', to: 'kafka', bend: -28, label: 'cases.processed', kind: 'processing' },
+];
+
 export class TrafficView {
     constructor(root) {
         this.root = root;
@@ -13,10 +53,14 @@ export class TrafficView {
         this.model = new TrafficModel();
         this.acceptedTracker = new DeltaTracker();
         this.savedTracker = new DeltaTracker();
-        this.saved = null;
+        this.processedTracker = new DeltaTracker();
+        this.publishedTracker = new DeltaTracker();
+        this.stats = null;
+        this.statsAt = null; // when pipeline counts were last polled successfully
         this.selectedMode = 'KAFKA';
-        this.connections = { generator: null, backend: null };
+        this.connections = { generator: null, backend: null, processor: null };
         this.particles = [];
+        this.lastActivity = {}; // edge id -> time traffic was last seen on it
         this.reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
         this.lastText = 0;
         this.frame = 0;
@@ -25,6 +69,8 @@ export class TrafficView {
             this.model.rebase();
             this.acceptedTracker.reset();
             this.savedTracker.reset();
+            this.processedTracker.reset();
+            this.publishedTracker.reset();
         };
         document.addEventListener('visibilitychange', this.onVisibility);
         this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -42,41 +88,62 @@ export class TrafficView {
 
     update(snapshot) {
         const now = performance.now();
-        const changedRun = this.model.runId !== snapshot.runId;
-        if (changedRun) {
+        if (this.model.runId !== snapshot.runId) {
             this.particles = [];
             this.acceptedTracker.reset();
             this.savedTracker.reset();
-            this.saved = null;
+            this.processedTracker.reset();
+            this.publishedTracker.reset();
+            this.stats = null;
         }
         const pulse = this.model.update(snapshot, now);
         this.emit('request', pulse.count, now);
         const replies = this.acceptedTracker.update(snapshot.accepted, now);
-        // Kafka mode: replies mean "written to Kafka". Direct mode: replies mean "saved".
+        // Kafka mode: an accepted reply means "written to cases.submitted". Direct mode: "saved".
         this.emit(this.kafka ? 'toKafka' : 'bypass', replies, now);
     }
 
-    setSaved(runId, saved) {
+    get saved() { return this.stats?.saved ?? null; }
+    get processed() { return this.stats == null ? null : this.stats.routed + this.stats.failed; }
+    // Saved cases whose outbox row the relay has already published to cases.saved.
+    get published() { return this.stats == null ? null : Math.max(0, this.stats.saved - this.stats.awaitingRelay); }
+    // Published to cases.saved but not yet processed (waiting in the topic or being worked on).
+    get toProcess() { return this.stats == null ? null : Math.max(0, this.published - this.processed); }
+
+    setStats(runId, stats) {
         if (runId !== this.model.runId) return;
         const now = performance.now();
-        this.saved = saved;
-        if (saved == null) { this.savedTracker.disconnect(); return; }
-        const count = this.savedTracker.update(saved, now);
-        if (this.kafka) this.emit('toDatabase', count, now);
+        this.stats = stats;
+        if (stats != null) this.statsAt = now;
+        if (stats == null) {
+            this.savedTracker.disconnect(); this.processedTracker.disconnect(); this.publishedTracker.disconnect();
+            return;
+        }
+        const saved = this.savedTracker.update(stats.saved, now);
+        if (this.kafka) this.emit('toDatabase', saved, now);
+        this.emit('relay', this.publishedTracker.update(this.published, now), now);
+        // Processed counts come from the database, so these results have made the whole trip:
+        // to the processor, back through cases.processed, and into PostgreSQL via the writers.
+        const processed = this.processedTracker.update(this.processed, now);
+        this.emit('toProcessor', processed, now);
+        this.emit('results', processed, now);
+        this.emit('toDatabase', processed, now);
     }
 
-    emit(segment, count, now) {
-        if (!count || this.reduced.matches || document.hidden) return;
-        // Equal-weight particles represent the full observed batch, bounded at 60 per update.
-        const particles = Math.min(count, 60);
+    emit(edge, count, now) {
+        if (!count) return;
+        this.lastActivity[edge] = now;
+        if (this.reduced.matches || document.hidden) return;
+        // Equal-weight particles represent the full observed batch, bounded at 40 per update.
+        const particles = Math.min(count, 40);
         for (let i = 0; i < particles; i++) {
-            this.particles.push({ segment, born: now + i / particles * 450, lane: Math.random(), weight: count / particles });
+            this.particles.push({ edge, born: now + i / particles * 450, lane: Math.random(), weight: count / particles });
         }
-        this.particles = this.particles.slice(-480);
+        this.particles = this.particles.slice(-520);
     }
 
     setConnections(health) {
-        this.connections = { generator: health.generator, backend: health.backend };
+        this.connections = { generator: health.generator, backend: health.backend, processor: health.processor };
     }
 
     disconnect() {
@@ -113,156 +180,200 @@ export class TrafficView {
         q('[data-density]').textContent = snapshot ? `${snapshot.inFlight} / ${snapshot.settings.maxInFlight ?? 'Unlimited'}` : '0 / —';
         const backlog = snapshot && this.kafka ? kafkaBacklog(snapshot.accepted, this.saved) : null;
         q('[data-backlog]').textContent = !this.kafka ? 'Not used' : backlog === null ? '—' : backlog.toLocaleString();
+        q('[data-processing-backlog]').textContent = snapshot && this.stats ? this.stats.open.toLocaleString() : '—';
         const meter = q('[data-capacity]');
         meter.hidden = !!snapshot && snapshot.settings.maxInFlight == null;
         meter.value = snapshot?.settings.maxInFlight ? snapshot.inFlight / snapshot.settings.maxInFlight : 0;
-        const path = this.kafka ? 'Through Kafka' : 'Direct to PostgreSQL';
-        q('[data-traffic-status]').textContent = `${path} · ` + (!snapshot ? 'Waiting for a run' : finished ? 'Run finished' : !this.model.fresh(now) ? 'Waiting for live telemetry' : this.reduced.matches ? 'Live · reduced motion' : 'Live telemetry');
-        q('[data-chart-note]').textContent = this.reduced.matches ? 'Reduced motion is enabled. The pipeline counts still update.' : 'Animation only: dots show observed count increases, not measured travel time. At high rates, dots represent groups.';
+        const path = this.kafka ? 'Intake through Kafka' : 'Intake direct to PostgreSQL';
+        q('[data-traffic-status]').textContent = `${path} · ` + (!snapshot ? 'Waiting for a run' : finished ? (this.stats && (this.stats.open > 0 || this.stats.awaitingRelay > 0) ? 'Run finished · processing continues' : 'Run finished') : !this.model.fresh(now) ? 'Waiting for live telemetry' : this.reduced.matches ? 'Live · reduced motion' : 'Live telemetry');
+        q('[data-chart-note]').textContent = this.reduced.matches ? 'Reduced motion is enabled. The graph counts still update.' : 'Animation only: moving dashes show direction (faster while traffic flows); dots show observed count increases, not measured travel time. Green is intake, blue is processing.';
     }
 
+    // Node rectangles and edge curves for the current canvas size.
     layout() {
         const w = this.width, h = this.height;
-        const vertical = w < 600;
-        const nodes = [];
-        if (vertical) {
-            const nodeW = Math.min(230, w - 90), nodeH = 118;
-            const x = (w - nodeW) / 2 - 20;
-            const gap = (h - 36 - 4 * nodeH) / 3;
-            for (let i = 0; i < 4; i++) nodes.push({ x, y: 18 + i * (nodeH + gap), w: nodeW, h: nodeH });
-            const bottom = n => ({ x: n.x + n.w / 2, y: n.y + n.h }), top = n => ({ x: n.x + n.w / 2, y: n.y });
-            const side = x + nodeW + 34, right = n => ({ x: n.x + n.w, y: n.y + n.h / 2 });
-            return {
-                vertical, nodes,
-                request: [bottom(nodes[0]), top(nodes[1])],
-                toKafka: [bottom(nodes[1]), top(nodes[2])],
-                toDatabase: [bottom(nodes[2]), top(nodes[3])],
-                bypass: [right(nodes[1]), { x: side, y: right(nodes[1]).y }, { x: side, y: right(nodes[3]).y }, right(nodes[3])],
-            };
+        const spec = w < 640 ? LAYOUTS.narrow : LAYOUTS.wide;
+        const nodes = {};
+        for (const [name, [fx, fy]] of Object.entries(spec.nodes)) {
+            const [nw, nh] = name === 'kafka' ? spec.kafkaSize : spec.size;
+            const cx = Math.min(w - nw / 2 - 8, Math.max(nw / 2 + 8, fx * w));
+            const cy = Math.min(h - nh / 2 - 8, Math.max(nh / 2 + 18, fy * h));
+            nodes[name] = { cx, cy, x: cx - nw / 2, y: cy - nh / 2, w: nw, h: nh };
         }
-        const nodeW = Math.min(140, (w - 36 - 3 * 50) / 4), nodeH = 148;
-        const gap = (w - 36 - 4 * nodeW) / 3;
-        const y = (h - nodeH) / 2 + 22;
-        for (let i = 0; i < 4; i++) nodes.push({ x: 18 + i * (nodeW + gap), y, w: nodeW, h: nodeH });
-        const left = n => ({ x: n.x, y: n.y + n.h / 2 }), right = n => ({ x: n.x + n.w, y: n.y + n.h / 2 });
-        const over = y - 52;
-        return {
-            vertical, nodes,
-            request: [right(nodes[0]), left(nodes[1])],
-            toKafka: [right(nodes[1]), left(nodes[2])],
-            toDatabase: [right(nodes[2]), left(nodes[3])],
-            bypass: [right(nodes[1]), { x: nodes[1].x + nodeW + gap / 2, y: over }, { x: nodes[3].x - gap / 2, y: over }, left(nodes[3])],
-        };
+        const edges = {};
+        for (const base of EDGES) {
+            const edge = { ...base, bend: spec.bends?.[base.id] ?? base.bend, labelSide: spec.labelSides?.[base.id],
+                labelAt: spec.labelAt?.[base.id] ?? .5 };
+            const a = nodes[edge.from], b = nodes[edge.to];
+            // Control point: midpoint pushed sideways (perpendicular to a -> b) by the edge's bend.
+            const mx = (a.cx + b.cx) / 2, my = (a.cy + b.cy) / 2;
+            const dx = b.cx - a.cx, dy = b.cy - a.cy, len = Math.hypot(dx, dy) || 1;
+            const control = { x: mx - dy / len * edge.bend * 2, y: my + dx / len * edge.bend * 2 };
+            const start = boxExit(a, control), end = boxExit(b, control);
+            const points = [];
+            for (let i = 0; i <= 24; i++) points.push(quadratic(start, control, end, i / 24));
+            edges[edge.id] = { ...edge, start, control, end, points };
+        }
+        return { nodes, edges };
     }
 
     draw(now) {
         const ctx = this.ctx, w = this.width, h = this.height;
         if (!w || !h) return;
         ctx.clearRect(0, 0, w, h);
-        const layout = this.layout();
-        const kafka = this.kafka;
+        const { nodes, edges } = this.layout();
 
-        this.pipe(layout.request, true);
-        if (kafka) {
-            this.pipe(layout.toKafka, true);
-            this.pipe(layout.toDatabase, true);
-        } else {
-            this.pipe(layout.toKafka, false);
-            this.pipe(layout.toDatabase, false);
-            this.pipe(layout.bypass, true);
-        }
+        // Edges first, so nodes sit on top of their ends.
+        for (const edge of Object.values(edges)) this.drawEdge(edge, !edge.mode || edge.mode === this.mode, now);
 
         this.particles = this.particles.filter(p => now - p.born < TRAVEL_MS);
-        if (!this.reduced.matches && this.model.fresh(now)) {
+        // Each edge's dots follow the data that drives them: request/intake edges follow the generator's live
+        // updates (which stop when the run ends); writer and processing edges follow the polled pipeline counts,
+        // which keep updating after the run while the backlog drains.
+        const generatorFresh = this.model.fresh(now);
+        const statsFresh = this.statsAt != null && now - this.statsAt <= 2500;
+        if (!this.reduced.matches) {
             for (const p of this.particles) {
                 const progress = (now - p.born) / TRAVEL_MS;
                 if (progress < 0) continue;
-                const { x, y } = pointAlong(layout[p.segment], progress, (p.lane - .5) * 14);
-                ctx.fillStyle = p.segment === 'toDatabase' ? colors.kafka : colors.green;
-                ctx.globalAlpha = Math.min(1, progress * 12, (1 - progress) * 12);
-                ctx.beginPath(); ctx.arc(x, y, Math.min(5.5, 3 + Math.log2(p.weight + 1) * .4), 0, Math.PI * 2); ctx.fill();
+                const edge = edges[p.edge];
+                const polled = edge.kind === 'processing' || edge.id === 'toDatabase';
+                if (!(polled ? statsFresh : generatorFresh)) continue;
+                const { x, y } = pointAlong(edge.points, progress, (p.lane - .5) * 6);
+                ctx.fillStyle = edge.kind === 'processing' ? colors.processing : colors.intake;
+                ctx.globalAlpha = Math.min(1, progress * 10, (1 - progress) * 10);
+                ctx.beginPath(); ctx.arc(x, y, Math.min(4.5, 2.6 + Math.log2(p.weight + 1) * .35), 0, Math.PI * 2); ctx.fill();
             }
         }
         ctx.globalAlpha = 1;
+        for (const edge of Object.values(edges)) this.drawEdgeLabel(edge, !edge.mode || edge.mode === this.mode);
 
         const snapshot = this.model.snapshot;
+        const kafka = this.kafka;
         const accepted = snapshot?.accepted ?? 0;
-        const backlog = snapshot ? kafkaBacklog(accepted, this.saved) : null;
         const fmt = n => n == null ? '—' : n.toLocaleString();
         const backend = this.connections.backend;
-        const [g, b, k, p] = layout.nodes;
-        this.drawNode(g, { kind: 'generator', title: 'Generator', subtitle: 'Creates requests',
-            count: fmt(snapshot?.dispatched ?? 0), caption: 'requests sent', tone: healthTone(this.connections.generator) });
-        this.drawNode(b, { kind: 'backend', title: 'Backend', subtitle: kafka ? 'Replies 202' : 'Replies 201',
-            count: fmt(accepted), caption: kafka ? 'stored in Kafka' : 'saved replies', tone: healthTone(backend) });
-        this.drawNode(k, { kind: 'kafka', title: 'Kafka', subtitle: kafka ? 'Holds the backlog' : 'Not in this path',
-            count: kafka ? fmt(backlog) : '—', caption: kafka ? 'waiting to save' : 'bypassed',
-            tone: kafka ? { accent: colors.kafka, surface: '#eaf2f6', label: 'Not health-checked' }
-                        : { accent: '#9aa6a1', surface: '#f3f4f3', label: 'Bypassed' } });
-        this.drawNode(p, { kind: 'database', title: 'PostgreSQL', subtitle: kafka ? 'Saved in batches' : 'Saved per request',
-            count: fmt(snapshot ? this.saved : 0), caption: 'cases saved', tone: healthTone(backend) });
+        const failed = this.stats?.failed ?? 0;
+        const outbox = this.stats?.awaitingRelay ?? 0;
+
+        this.drawNode(nodes.generator, { kind: 'generator', title: 'Generator', count: fmt(snapshot?.dispatched ?? 0),
+            caption: 'requests sent', tone: healthTone(this.connections.generator) });
+        this.drawNode(nodes.backend, { kind: 'backend', title: 'Backend', count: fmt(accepted),
+            caption: kafka ? 'accepted (202)' : 'saved (201)', tone: healthTone(backend) });
+        this.drawNode(nodes.database, { kind: 'database', title: 'PostgreSQL', count: fmt(snapshot ? this.saved : 0),
+            caption: outbox ? `cases saved · ${outbox.toLocaleString()} in outbox` : 'cases saved', tone: healthTone(backend) });
+        this.drawNode(nodes.processor, { kind: 'processor', title: 'Processor', count: fmt(snapshot ? this.processed : 0),
+            caption: failed ? `processed · ${failed.toLocaleString()} failed` : 'cases processed',
+            tone: healthTone(this.connections.processor) });
+        // Kafka is the hub: one row per topic with what is waiting in it.
+        const submittedBacklog = snapshot && kafka ? kafkaBacklog(accepted, this.saved) : null;
+        this.drawKafka(nodes.kafka, [
+            ['cases.submitted', kafka ? fmt(submittedBacklog) : 'unused'],
+            ['cases.saved', fmt(snapshot ? this.toProcess : null)],
+            ['cases.processed', 'results'],
+        ]);
     }
 
-    pipe(points, active) {
+    drawEdge(edge, active, now) {
         const ctx = this.ctx;
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        const stroke = (color, width, dash = []) => {
-            ctx.setLineDash(dash); ctx.strokeStyle = color; ctx.lineWidth = width;
-            ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
-            for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
-            ctx.stroke();
-        };
-        if (active) {
-            stroke('#b8cbc3', 30); stroke('#e8f0eb', 26); stroke('#f7faf8', 16);
-            // Direction chevron at the middle of the path stays readable when idle.
-            const mid = pointAlong(points, .5, 0), ahead = pointAlong(points, .52, 0);
-            const angle = Math.atan2(ahead.y - mid.y, ahead.x - mid.x);
-            ctx.save(); ctx.translate(mid.x, mid.y); ctx.rotate(angle);
-            ctx.strokeStyle = '#90aa9e'; ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.moveTo(-4, -5); ctx.lineTo(2, 0); ctx.lineTo(-4, 5); ctx.stroke();
-            ctx.restore();
-        } else {
-            stroke('#d5dcd8', 2, [5, 6]);
-        }
+        ctx.beginPath(); ctx.moveTo(edge.start.x, edge.start.y);
+        ctx.quadraticCurveTo(edge.control.x, edge.control.y, edge.end.x, edge.end.y);
+        ctx.lineCap = 'round';
+        ctx.setLineDash(active ? [] : [5, 6]);
+        ctx.strokeStyle = active ? colors.line : colors.idle; ctx.lineWidth = active ? 2.4 : 1.6;
+        ctx.stroke();
         ctx.setLineDash([]);
+        // Flow: dashes always drift along active edges in the direction data moves. Slow when idle,
+        // fast while traffic was seen on this edge in the last few seconds.
+        if (active && !this.reduced.matches) {
+            const busy = now - (this.lastActivity[edge.id] ?? -Infinity) < 3000;
+            const speed = busy ? 70 : 14; // pixels per second
+            ctx.beginPath(); ctx.moveTo(edge.start.x, edge.start.y);
+            ctx.quadraticCurveTo(edge.control.x, edge.control.y, edge.end.x, edge.end.y);
+            ctx.setLineDash([3, 11]); ctx.lineDashOffset = -(now / 1000) * speed;
+            ctx.strokeStyle = edge.kind === 'processing' ? colors.processing : colors.intake;
+            ctx.globalAlpha = busy ? .75 : .4; ctx.lineWidth = 2.4;
+            ctx.stroke();
+            ctx.setLineDash([]); ctx.lineDashOffset = 0; ctx.globalAlpha = 1;
+        }
+        // Arrowhead along the curve's final direction.
+        const angle = Math.atan2(edge.end.y - edge.control.y, edge.end.x - edge.control.x);
+        ctx.save(); ctx.translate(edge.end.x, edge.end.y); ctx.rotate(angle);
+        ctx.fillStyle = active ? colors.line : colors.idle;
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-9, -4.5); ctx.lineTo(-9, 4.5); ctx.closePath(); ctx.fill();
+        ctx.restore();
     }
 
-    drawNode(node, { kind, title, subtitle, count, caption, tone }) {
-        const ctx = this.ctx, { x, y, w, h } = node, center = x + w / 2;
-        const compact = h < 140;
+    // Labels sit beside their edge, not on it, so they never cover the line or its arrowhead.
+    drawEdgeLabel(edge, active) {
+        const ctx = this.ctx;
+        const t = edge.labelAt;
+        const mid = quadratic(edge.start, edge.control, edge.end, t);
+        ctx.font = '11px "Segoe UI", sans-serif';
+        const width = ctx.measureText(edge.label).width + 12, height = 18;
+        // The label moves along the curve's normal at t, to the outside of the bend (above for straight edges),
+        // far enough for the whole pill to clear the line.
+        const tx = 2 * (1 - t) * (edge.control.x - edge.start.x) + 2 * t * (edge.end.x - edge.control.x);
+        const ty = 2 * (1 - t) * (edge.control.y - edge.start.y) + 2 * t * (edge.end.y - edge.control.y);
+        const tl = Math.hypot(tx, ty) || 1;
+        let nx = -ty / tl, ny = tx / tl;
+        const side = edge.labelSide ?? (edge.bend === 0 ? (ny > 0 ? -1 : 1) : Math.sign(edge.bend));
+        nx *= side; ny *= side;
+        const clearance = Math.abs(nx) * width / 2 + Math.abs(ny) * height / 2 + 5;
+        mid.x += nx * clearance; mid.y += ny * clearance;
+        // Keep the whole pill inside the canvas.
+        mid.x = Math.min(this.width - width / 2 - 2, Math.max(width / 2 + 2, mid.x));
+        ctx.globalAlpha = active ? 1 : .55;
+        ctx.fillStyle = '#ffffff'; ctx.strokeStyle = active ? '#d7e2dd' : '#e4e9e6'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.roundRect(mid.x - width / 2, mid.y - height / 2, width, height, 9); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = edge.kind === 'processing' ? colors.processing : colors.muted;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(edge.label, mid.x, mid.y + .5);
+        ctx.textBaseline = 'alphabetic'; ctx.globalAlpha = 1;
+    }
+
+    card(node, tone) {
+        const ctx = this.ctx;
         ctx.fillStyle = tone.surface; ctx.strokeStyle = tone.accent; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.roundRect(x, y, w, h, 14); ctx.fill(); ctx.stroke();
-        ctx.strokeStyle = tone.accent; ctx.fillStyle = tone.accent; ctx.lineWidth = 2;
-        const iy = y + (compact ? 12 : 16);
-        if (kind === 'backend') {
-            for (let i = 0; i < 3; i++) {
-                ctx.beginPath(); ctx.roundRect(center - 17, iy + i * 9, 34, 6, 2); ctx.stroke();
-                ctx.beginPath(); ctx.arc(center + 11, iy + 3 + i * 9, 1, 0, Math.PI * 2); ctx.fill();
-            }
-        } else if (kind === 'kafka') {
-            // An append-only log: rows of segments.
-            for (let row = 0; row < 3; row++) for (let col = 0; col < 4 - (row === 2 ? 1 : 0); col++) {
-                ctx.beginPath(); ctx.roundRect(center - 20 + col * 10.5, iy + row * 9, 8, 6, 1.5); ctx.fill();
-            }
-        } else if (kind === 'database') {
-            ctx.beginPath(); ctx.ellipse(center, iy + 3, 15, 4, 0, 0, Math.PI * 2); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(center - 15, iy + 3); ctx.lineTo(center - 15, iy + 22);
-            ctx.ellipse(center, iy + 22, 15, 4, 0, Math.PI, 0, true); ctx.lineTo(center + 15, iy + 3); ctx.stroke();
-            ctx.beginPath(); ctx.ellipse(center, iy + 12.5, 15, 4, 0, 0, Math.PI); ctx.stroke();
-        } else {
-            for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
-                ctx.beginPath(); ctx.arc(center - 10 + col * 10, iy + 4 + row * 9, 2.6, 0, Math.PI * 2); ctx.fill();
-            }
+        ctx.beginPath(); ctx.roundRect(node.x, node.y, node.w, node.h, 12); ctx.fill(); ctx.stroke();
+        // Status sits above the box's right edge, clear of edges arriving at the box's centre.
+        if (tone.label) {
+            ctx.fillStyle = tone.accent; ctx.font = '600 11px "Segoe UI", sans-serif'; ctx.textAlign = 'right';
+            ctx.fillText(tone.label, node.x + node.w - 4, node.y - 6);
         }
-        const countFont = w < 130 ? 22 : 26;
-        ctx.textAlign = 'center'; ctx.fillStyle = colors.ink;
-        ctx.font = `600 ${compact ? 17 : 18}px "Segoe UI", sans-serif`; ctx.fillText(title, center, y + (compact ? 54 : 66));
-        if (!compact) {
-            ctx.fillStyle = colors.muted; ctx.font = '12px "Segoe UI", sans-serif'; ctx.fillText(subtitle, center, y + 84);
-        }
-        ctx.fillStyle = tone.accent; ctx.font = `600 ${countFont}px "Segoe UI", sans-serif`; ctx.fillText(count, center, y + (compact ? 84 : 116));
-        ctx.fillStyle = colors.muted; ctx.font = '12px "Segoe UI", sans-serif'; ctx.fillText(caption, center, y + (compact ? 104 : 135));
-        ctx.fillStyle = tone.accent; ctx.font = '600 12px "Segoe UI", sans-serif'; ctx.fillText(tone.label, center, y - 10);
+    }
+
+    drawNode(node, { kind, title, count, caption, tone }) {
+        const ctx = this.ctx, { x, y, w } = node;
+        this.card(node, tone);
+        drawIcon(ctx, kind, x + 14, y + 12, tone.accent);
+        ctx.textAlign = 'left'; ctx.fillStyle = colors.ink; ctx.font = '600 14px "Segoe UI", sans-serif';
+        ctx.fillText(title, x + 44, y + 28);
+        ctx.fillStyle = tone.accent; ctx.font = `600 ${w < 150 ? 20 : 22}px "Segoe UI", sans-serif`;
+        ctx.fillText(count, x + 14, y + 64);
+        ctx.fillStyle = colors.muted; ctx.font = '11px "Segoe UI", sans-serif';
+        ctx.fillText(fit(ctx, caption, w - 24), x + 14, y + 82);
+    }
+
+    drawKafka(node, topics) {
+        const ctx = this.ctx, { x, y, w } = node;
+        // No status line: nothing health-checks Kafka directly.
+        const tone = { accent: colors.processing, surface: colors.kafkaSurface, label: '' };
+        this.card(node, tone);
+        drawIcon(ctx, 'kafka', x + 14, y + 12, tone.accent);
+        ctx.textAlign = 'left'; ctx.fillStyle = colors.ink; ctx.font = '600 14px "Segoe UI", sans-serif';
+        ctx.fillText('Kafka', x + 44, y + 28);
+        ctx.fillStyle = colors.muted; ctx.font = '11px "Segoe UI", sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText('waiting', x + w - 12, y + 28);
+        topics.forEach(([name, value], i) => {
+            const rowY = y + 54 + i * 22;
+            ctx.strokeStyle = '#d3e2ea'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(x + 12, rowY - 15); ctx.lineTo(x + w - 12, rowY - 15); ctx.stroke();
+            ctx.textAlign = 'left'; ctx.fillStyle = colors.ink; ctx.font = '12px Consolas, monospace';
+            ctx.fillText(name, x + 12, rowY);
+            ctx.textAlign = 'right'; ctx.fillStyle = tone.accent; ctx.font = '600 12px "Segoe UI", sans-serif';
+            ctx.fillText(value, x + w - 12, rowY);
+        });
     }
 
     destroy() {
@@ -280,7 +391,63 @@ function healthTone(live) {
             : { accent: '#bd3029', surface: '#fbefed', label: 'Offline' };
 }
 
-// Point at a fraction of a polyline's length, offset sideways to spread particles across the pipe.
+// Small 22px icons drawn at (x, y), top-left.
+function drawIcon(ctx, kind, x, y, color) {
+    ctx.save();
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1.8;
+    const cx = x + 11, cy = y + 11;
+    if (kind === 'backend') {
+        for (let i = 0; i < 3; i++) {
+            ctx.beginPath(); ctx.roundRect(x + 1, y + 2 + i * 7, 20, 5, 1.5); ctx.stroke();
+            ctx.beginPath(); ctx.arc(x + 16, y + 4.5 + i * 7, .9, 0, Math.PI * 2); ctx.fill();
+        }
+    } else if (kind === 'kafka') {
+        for (let row = 0; row < 3; row++) for (let col = 0; col < 4 - (row === 2 ? 1 : 0); col++) {
+            ctx.beginPath(); ctx.roundRect(x + col * 5.6, y + 3 + row * 6.5, 4.4, 4.4, 1); ctx.fill();
+        }
+    } else if (kind === 'database') {
+        ctx.beginPath(); ctx.ellipse(cx, y + 4, 9, 3, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx - 9, y + 4); ctx.lineTo(cx - 9, y + 18);
+        ctx.ellipse(cx, y + 18, 9, 3, 0, Math.PI, 0, true); ctx.lineTo(cx + 9, y + 4); ctx.stroke();
+        ctx.beginPath(); ctx.ellipse(cx, y + 11, 9, 3, 0, 0, Math.PI); ctx.stroke();
+    } else if (kind === 'processor') {
+        ctx.beginPath(); ctx.arc(cx, cy, 5.5, 0, Math.PI * 2); ctx.stroke();
+        for (let i = 0; i < 6; i++) {
+            const a = i * Math.PI / 3;
+            ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * 6.5, cy + Math.sin(a) * 6.5);
+            ctx.lineTo(cx + Math.cos(a) * 9.5, cy + Math.sin(a) * 9.5); ctx.stroke();
+        }
+    } else {
+        for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+            ctx.beginPath(); ctx.arc(x + 4 + col * 7, y + 4 + row * 7, 1.9, 0, Math.PI * 2); ctx.fill();
+        }
+    }
+    ctx.restore();
+}
+
+// Shortens text with an ellipsis so it fits the given width.
+function fit(ctx, text, width) {
+    if (ctx.measureText(text).width <= width) return text;
+    let s = text;
+    while (s.length > 1 && ctx.measureText(s + '…').width > width) s = s.slice(0, -1);
+    return s + '…';
+}
+
+function quadratic(a, c, b, t) {
+    const u = 1 - t;
+    return { x: u * u * a.x + 2 * u * t * c.x + t * t * b.x, y: u * u * a.y + 2 * u * t * c.y + t * t * b.y };
+}
+
+// Where the line from the box centre towards `toward` leaves the box (plus a small gap).
+function boxExit(box, toward) {
+    const dx = toward.x - box.cx, dy = toward.y - box.cy;
+    const sx = dx === 0 ? Infinity : (box.w / 2 + 4) / Math.abs(dx);
+    const sy = dy === 0 ? Infinity : (box.h / 2 + 4) / Math.abs(dy);
+    const s = Math.min(sx, sy);
+    return { x: box.cx + dx * s, y: box.cy + dy * s };
+}
+
+// Point at a fraction of a polyline's length, offset sideways to spread particles across the edge.
 function pointAlong(points, fraction, offset) {
     const lengths = [];
     let total = 0;

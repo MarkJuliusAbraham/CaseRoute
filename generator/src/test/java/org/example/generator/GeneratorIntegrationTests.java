@@ -34,6 +34,13 @@ class GeneratorIntegrationTests {
     private static final ObjectMapper JSON = new JsonMapper();
     private static final AtomicInteger delay = new AtomicInteger();
     private static final AtomicInteger responseStatus = new AtomicInteger(-1);
+    /** Per clientRequestId: how many attempts reached the target. Every attempt counts as "saved". */
+    private static final java.util.Map<String, Integer> received = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Attempts per request that get a 503 before the target starts replying normally. */
+    private static final AtomicInteger failFirstAttempts = new AtomicInteger();
+    /** Request IDs the fake ledger leaves out, as if the case was lost after acceptance. */
+    private static final java.util.Set<String> lost = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final AtomicInteger warmups = new AtomicInteger();
     private static final HttpServer TARGET = startTarget();
     @LocalServerPort int port;
     @Autowired RunService runs;
@@ -46,7 +53,14 @@ class GeneratorIntegrationTests {
             server.createContext("/api/cases", exchange -> {
                 try {
                     Thread.sleep(delay.get());
+                    if (exchange.getRequestURI().getPath().endsWith("/warmup")) {
+                        exchange.getRequestBody().readAllBytes();
+                        warmups.incrementAndGet(); // stores nothing
+                        exchange.sendResponseHeaders(204, -1);
+                        return;
+                    }
                     var input = JSON.readTree(exchange.getRequestBody().readAllBytes());
+                    int attempt = received.merge(input.path("clientRequestId").asText(), 1, Integer::sum);
                     var output = new LinkedHashMap<String, Object>();
                     boolean direct = exchange.getRequestURI().getPath().endsWith("/direct");
                     output.put("clientRequestId", input.path("clientRequestId").asText());
@@ -60,13 +74,23 @@ class GeneratorIntegrationTests {
                         output.put("status", "ACCEPTED");
                         output.put("acceptedAt", java.time.Instant.now().toString());
                     }
-                    int code = responseStatus.get() > 0 ? responseStatus.get() : direct ? 201 : 202;
+                    int code = attempt <= failFirstAttempts.get() ? 503
+                            : responseStatus.get() > 0 ? responseStatus.get() : direct ? 201 : 202;
                     byte[] body = JSON.writeValueAsBytes(output);
                     exchange.getResponseHeaders().set("Content-Type", "application/json");
                     exchange.sendResponseHeaders(code, body.length);
                     exchange.getResponseBody().write(body);
                 } catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
                 finally { exchange.close(); }
+            });
+            server.createContext("/api/simulation/cases/ledger", exchange -> {
+                var out = new StringBuilder();
+                received.keySet().stream().filter(id -> !lost.contains(id))
+                        .forEach(id -> out.append(id).append(",ROUTED").append((char) 10));
+                byte[] body = out.toString().getBytes();
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+                exchange.close();
             });
             server.start();
             return server;
@@ -77,6 +101,8 @@ class GeneratorIntegrationTests {
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("generator.target-url", () -> "http://127.0.0.1:" + TARGET.getAddress().getPort() + "/api/cases");
         registry.add("generator.report-directory", () -> reports.toString());
+        registry.add("generator.retry.base-delay", () -> "20ms");
+        registry.add("generator.retry.max-delay", () -> "40ms");
     }
 
     @AfterAll static void closeTarget() { TARGET.stop(0); }
@@ -84,7 +110,7 @@ class GeneratorIntegrationTests {
     @AfterEach void drain() throws Exception {
         LoadRun run = runs.current();
         if (run != null) { run.stop(); await(() -> !run.active()); }
-        delay.set(0); responseStatus.set(-1);
+        delay.set(0); responseStatus.set(-1); failFirstAttempts.set(0); lost.clear(); received.clear(); warmups.set(0);
     }
 
     @Test void publicControlsStartStreamStopAndDownloadManifest() throws Exception {
@@ -230,6 +256,87 @@ class GeneratorIntegrationTests {
         assertTrue(s.accepted() >= 5);
         assertEquals(s.dispatched(), s.accepted());
         assertEquals(s.planned(), s.accepted() + s.notSent());
+    }
+
+    @Test void retriesResendUnknownOutcomesWithTheSameIdUntilAccepted() throws Exception {
+        failFirstAttempts.set(2); // each submission gets two 503s, then a 202
+        LoadRun run = runs.start(new RunSettings(60, 1, 1, org.example.generator.model.SubmissionMode.KAFKA, true));
+        await(() -> run.snapshot().accepted() == 1);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        assertEquals(0, s.unknown());
+        assertEquals(1, s.retried()); assertEquals(1, s.recovered()); assertEquals(2, s.retryRequests());
+        assertEquals(3, s.recentResults().getFirst().attempts());
+        assertEquals(1, received.size(), "all three attempts reused one clientRequestId");
+    }
+
+    @Test void retriesGiveUpAfterMaxAttemptsAndNeverResendDefiniteRejections() throws Exception {
+        failFirstAttempts.set(100);
+        LoadRun unknown = runs.start(new RunSettings(60, 1, 1, org.example.generator.model.SubmissionMode.KAFKA, true));
+        await(() -> unknown.snapshot().unknown() == 1);
+        unknown.stop(); await(() -> !unknown.active());
+        assertEquals(5, unknown.snapshot().recentResults().getFirst().attempts(), "generator.retry.max-attempts");
+        assertEquals(0, unknown.snapshot().recovered());
+
+        failFirstAttempts.set(0); responseStatus.set(400);
+        LoadRun rejected = runs.start(new RunSettings(60, 1, 1, org.example.generator.model.SubmissionMode.KAFKA, true));
+        await(() -> rejected.snapshot().failed() == 1);
+        rejected.stop(); await(() -> !rejected.active());
+        assertEquals(1, rejected.snapshot().recentResults().getFirst().attempts());
+        assertEquals(0, rejected.snapshot().retryRequests());
+    }
+
+    @Test void checkerReconcilesTheClientsOutcomesWithTheBackendLedger() throws Exception {
+        LoadRun run = runs.start(new RunSettings(600, 1, null));
+        await(() -> run.snapshot().accepted() >= 3);
+        responseStatus.set(503); // the target saves these but the client only sees a 503: unknown outcome
+        await(() -> run.snapshot().unknown() >= 1);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+
+        String lostId = s.recentResults().stream().filter(r -> r.outcome().equals("ACCEPTED")).findFirst()
+                .orElseThrow().clientRequestId().toString();
+        lost.add(lostId);
+        var response = post("/api/runs/" + run.id() + "/check", "");
+        assertEquals(200, response.statusCode());
+        var check = JSON.readTree(response.body());
+        assertEquals("DISCREPANCIES", check.path("verdict").asText());
+        assertEquals(s.accepted(), check.path("accepted").path("total").asLong());
+        assertEquals(1, check.path("accepted").path("missing").asLong());
+        assertEquals(s.accepted() - 1, check.path("accepted").path("processed").asLong());
+        assertEquals(lostId, check.path("examples").path("acceptedButMissing").get(0).asText());
+        assertEquals(s.unknown(), check.path("unknown").path("saved").asLong(), "saved even though the reply was a 503");
+        assertEquals(0, check.path("unexpected").asLong());
+        assertTrue(Files.exists(reports.resolve(run.id() + ".check.json")));
+
+        lost.clear();
+        var again = JSON.readTree(post("/api/runs/" + run.id() + "/check", "").body());
+        assertEquals("CONSISTENT", again.path("verdict").asText());
+        var latest = http.send(HttpRequest.newBuilder(url("/api/runs/" + run.id() + "/check")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals("CONSISTENT", JSON.readTree(latest.body()).path("verdict").asText());
+    }
+
+    @Test void warmUpRampsAgainstTheNoOpEndpointBeforeTheMeasuredRun() throws Exception {
+        // 600/min with a 2 s ramp: 600 * 2 / 120 = 10 warm-up requests, then the real submissions.
+        var settings = new RunSettings(600, 1, null, org.example.generator.model.SubmissionMode.KAFKA, false, 2);
+        LoadRun run = runs.start(settings);
+        assertEquals("WARMING_UP", run.snapshot().state());
+        await(() -> run.snapshot().accepted() >= 2);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        assertEquals(10, s.warmupPlanned());
+        assertEquals(10, s.warmupSent());
+        assertEquals(0, s.warmupFailed());
+        assertEquals(10, warmups.get());
+        assertEquals(s.accepted(), received.size(), "warm-up requests were never stored or counted");
+        assertEquals(s.planned(), s.accepted() + s.notSent());
+    }
+
+    @Test void checkingAnActiveRunIsRefused() throws Exception {
+        delay.set(200);
+        LoadRun run = runs.start(new RunSettings(600, 1, null));
+        assertEquals(409, post("/api/runs/" + run.id() + "/check", "").statusCode());
     }
 
     private URI url(String path) { return URI.create("http://localhost:" + port + path); }

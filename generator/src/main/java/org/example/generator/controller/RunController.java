@@ -1,9 +1,11 @@
 package org.example.generator.controller;
 
 import jakarta.validation.Valid;
+import org.example.generator.model.CheckReport;
 import org.example.generator.model.RunSettings;
 import org.example.generator.model.RunSnapshot;
 import org.example.generator.service.LoadRun;
+import org.example.generator.service.RunChecker;
 import org.example.generator.service.RunService;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -22,8 +24,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @RequestMapping("/api/runs")
 public class RunController {
     private final RunService runs;
+    private final RunChecker checker;
 
-    public RunController(RunService runs) { this.runs = runs; }
+    public RunController(RunService runs, RunChecker checker) { this.runs = runs; this.checker = checker; }
+
+    /** Reconciles a finished run against the cases the backend saved. Can be repeated as processing drains. */
+    @PostMapping("/{id}/check")
+    public CheckReport check(@PathVariable UUID id) { return checker.check(runs.find(id)); }
+
+    /** The latest check of the run, or 204 if it has not been checked. */
+    @GetMapping("/{id}/check")
+    public ResponseEntity<CheckReport> latestCheck(@PathVariable UUID id) {
+        return checker.latest(runs.find(id).id()).map(ResponseEntity::ok).orElse(ResponseEntity.noContent().build());
+    }
 
     @PostMapping
     public ResponseEntity<RunSnapshot> start(@Valid @RequestBody RunSettings settings) throws IOException {

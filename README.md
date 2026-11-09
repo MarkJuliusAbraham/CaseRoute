@@ -6,6 +6,8 @@ A system design case study in reliable customer-service case submission and proc
 
 - `backend/`: Spring Boot case API and PostgreSQL persistence (port 8080).
 - `generator/`: Spring Boot traffic-generation API and SSE progress (port 8081).
+- `processor/`: Spring Boot app that processes saved cases from `cases.saved` and publishes results to
+  `cases.processed` (port 8083). It has no database access; it only talks to Kafka.
 - `frontend/`: shared browser controls and visualization (Vite, port 5173).
 - `compose.yaml`: local PostgreSQL (port 5432) and Kafka (port 9092).
 
@@ -36,6 +38,13 @@ cd backend
 cd generator
 ..\backend\mvnw.cmd spring-boot:run
 ```
+
+```powershell
+cd processor
+..\backend\mvnw.cmd spring-boot:run
+```
+
+Start the backend before the processor: the backend creates the `outbox` table and the processing columns.
 
 ```powershell
 cd frontend
@@ -112,3 +121,44 @@ The generator is also a Spring Boot/Tomcat app and froze the same way, sending n
 of overdue requests. Its `pom.xml` uses the same flags (writing `generator/gc.log`). In IntelliJ, set the same VM
 options on both run configurations and untick **Enable launch optimization**, which otherwise adds
 `-XX:TieredStopAtLevel=1` and keeps the JVM from fully optimizing under load.
+
+## Processing stage (outbox → cases.saved → processor)
+
+When a case is saved (by the Kafka writer or by the direct endpoint), the same database transaction also inserts
+a `case.saved` row into the `outbox` table. Saving and "needs processing" therefore always happen together.
+
+- **Relay** (in the backend, `OutboxRelay`): every 100 ms it locks a batch of outbox rows, publishes them to the
+  `cases.saved` topic, waits for Kafka's confirmation, then deletes them. If Kafka is down, rows wait in the outbox.
+  A crash after publishing but before deleting can send a row twice, never zero times.
+- **Processor** (`processor/`, separate app, Kafka only): consumes `cases.saved`, simulates the work on a virtual
+  thread per case, and publishes the result (`ROUTED` with category and team, or `FAILED`) to `cases.processed`.
+  Failed cases are also copied to `cases.saved.DLT`.
+- **Results** (in the backend, `CaseProcessedConsumer`): consumes `cases.processed` in batches and updates the case
+  row. The backend is the only writer of the `cases` table. Only `OPEN` cases are updated, so a duplicate result
+  changes nothing; unusable results go to `cases.processed.DLT`.
+- **Simulated work** is configured in `processor/src/main/resources/application.properties`: mean duration, a slow
+  fraction, transient failures with retries, and permanent failures. Each case's behaviour is derived from its
+  `clientRequestId`, so runs are reproducible. `max-in-flight` limits concurrent cases; when full, the processor
+  stops pulling from Kafka and the backlog waits there.
+- **Intake toggle**: "Buffer submissions through Kafka" only changes how a submission is accepted (`/api/cases`
+  vs `/api/cases/direct`). Processing runs through Kafka in both modes.
+- **Dashboard**: the pipeline shows a fifth Processor stage. Counts come from
+  `GET /api/simulation/cases/stats?testRunId=` (saved, open, routed, failed, awaitingRelay), polled every second.
+
+## Retries, status lookup and checker
+
+- **Idempotent intake.** Both endpoints dedupe by `clientRequestId`: the Kafka path with `ON CONFLICT DO NOTHING`,
+  the direct path by replying `200` with the already saved case. Clients may therefore resend when unsure.
+- **Status lookup.** `POST /api/cases` replies `202` with `Location: /api/cases/requests/{clientRequestId}`.
+  That endpoint returns the case and its processing status, or `404` while no case exists (never received, or
+  still waiting in Kafka).
+- **Retries** (generator, "Retry unknown outcomes" toggle): resend UNKNOWN outcomes with exponential backoff and
+  jitter, up to 5 attempts. See `generator/README.md`.
+- **Checker** (generator): after a run, compares every submission's outcome as the client saw it with the
+  backend's ledger of saved cases, and reports missing, still-processing and unexpected cases.
+- **Warm-up** (generator, "Warm-up in seconds"): ramps traffic up against `POST /api/cases/warmup` before the
+  measured run. It takes the real Kafka path but writes to `cases.warmup`, which nothing consumes, so no case is
+  created and the run does not start with zero open connections, cold code and a cold Kafka producer.
+- **Load-test hygiene**: DevTools auto-restart is off in the backend (a recompile no longer restarts it mid-run),
+  and each app writes its own GC log (`gc-backend.log`, `gc-generator.log`, `gc-processor.log`).
+- **Documentation** for every application is in the dashboard's Documentation tab (top right).

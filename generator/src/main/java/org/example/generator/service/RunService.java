@@ -2,6 +2,7 @@ package org.example.generator.service;
 
 import jakarta.annotation.PreDestroy;
 import org.example.generator.client.CaseClient;
+import org.example.generator.client.RetryPolicy;
 import org.example.generator.model.RunSettings;
 import org.example.generator.model.Submission;
 import org.example.generator.report.RunReport;
@@ -19,14 +20,16 @@ import java.util.UUID;
 @Service
 public class RunService {
     private final CaseClient client;
+    private final RetryPolicy retry;
     private final ObjectMapper json;
     private final Path directory;
     private LoadRun current;
     private Thread runner;
 
-    public RunService(CaseClient client, ObjectMapper json,
+    public RunService(CaseClient client, RetryPolicy retry, ObjectMapper json,
             @Value("${generator.report-directory}") Path directory) {
         this.client = client;
+        this.retry = retry;
         this.json = json;
         this.directory = directory;
     }
@@ -40,7 +43,7 @@ public class RunService {
         var submissions = new ArrayList<Submission>();
         for (long i = 1; i <= settings.planned(); i++) submissions.add(Submission.forRun(id, i));
         var report = new RunReport(directory, id, settings, submissions, json);
-        current = new LoadRun(id, settings, submissions, client, report);
+        current = new LoadRun(id, settings, submissions, client, retry, report);
         runner = Thread.ofVirtual().name("load-run-" + id).start(current);
         return current;
     }

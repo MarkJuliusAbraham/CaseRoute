@@ -35,7 +35,7 @@ For 50 requests/minute over 10 minutes, 500 submissions are planned. Scheduling 
 When maximum concurrency is reached, a submission is recorded as SKIPPED rather than queued indefinitely.
 Scheduling delay is measured. Rates are best effort on the local machine, not a hard real-time guarantee.
 Stopping records the remaining count as not sent and waits for in-flight requests (15-second request timeout).
-There are no automatic retries.
+Retries are off by default; see "Retries" below.
 
 Reports are under `reports/<runId>.jsonl`, relative to the generator working directory. One JSON object per line:
 
@@ -57,7 +57,39 @@ testRunId and status ACCEPTED; the submission is durably in Kafka and reaches Po
 row may not exist yet. DIRECT: HTTP 201 with matching payload, OPEN status and a case UUID; the row exists.
 REJECTED means any other response below 500. MISMATCH means the expected status failed validation.
 UNKNOWN means a network failure, interruption, or 5xx: the backend may have accepted the submission.
-None of these independently verifies database state or business processing. A checker is a future component.
+None of these independently verifies database state or business processing; the checker does (below).
+
+## Retries
+
+With `retryEnabled: true` (the "Retry unknown outcomes" toggle), a submission whose outcome is UNKNOWN is resent
+with the same clientRequestId. Up to `generator.retry.max-attempts` (5) attempts in total; the wait before each
+retry doubles from `base-delay` (500 ms) up to `max-delay` (8 s) and is randomised between half and all of that
+value. REJECTED and MISMATCH are definite answers and are never retried. A submission holds its in-flight slot
+until its final outcome. The snapshot counts `retried` (submissions that needed a retry), `recovered` (of those,
+accepted in the end) and `retryRequests` (extra HTTP requests); each result records its `attempts`.
+
+## Warm-up
+
+With `warmupSeconds` > 0, the run first ramps from zero to the full rate over that many seconds, sending synthetic
+submissions to `POST /api/cases/warmup`. The backend handles them like real ones, including the Kafka write and
+its confirmation, but writes to `cases.warmup`, which nothing consumes, so no case is created. It replies 204. That is `requestsPerMinute * warmupSeconds / 120` requests, reported as
+`warmupPlanned`, `warmupSent` and `warmupFailed`, never in the run's outcome counts or report lines. The state
+is `WARMING_UP` until the measured run starts at full rate on the same HTTP client, so its connections are
+already open, both JVMs have compiled the request path, and the backend's Kafka producer is warm. Leave it at 0 to test a cold start (a sudden spike).
+
+## Checker
+
+`POST /api/runs/{id}/check` (after the run ends) reconciles the run: it streams the backend's ledger
+(`GET /api/simulation/cases/ledger?testRunId=`, one `clientRequestId,status` line per saved case) and compares it
+with the generator's final outcome for every submission. `GET /api/runs/{id}/check` returns the latest result,
+which is also written to `reports/<runId>.check.json`.
+
+- Accepted: processed, awaiting processing (OPEN), or **missing** (no case: lost, or still in Kafka if checked early).
+- Unknown: saved anyway (only the reply was lost) or never arrived.
+- Rejected but saved, unexpected (never sent or never planned): should always be 0.
+- Verdict: `CONSISTENT`, `PENDING` (only OPEN cases remain) or `DISCREPANCIES`.
+
+The dashboard runs it automatically once the pipeline settles after a run.
 
 ## Backend contract
 
@@ -68,7 +100,8 @@ own endpoint with one fixed response contract:
   and `503` if it cannot confirm in time. A consumer saves accepted submissions to Postgres in batches.
   A unique constraint on clientRequestId plus `ON CONFLICT DO NOTHING` makes resubmitting safe.
 - `DIRECT` → `POST /api/cases/direct`: saves to Postgres before replying `201 Created` with the case.
-  A duplicate clientRequestId returns `409`.
+  A retry of an already saved submission (same clientRequestId and content) returns `200` with the existing
+  case; the same clientRequestId with different content returns `409`.
 
 New submissions require a UUID `clientRequestId` in the JSON body. `generator.target-url` points at
 `/api/cases`; DIRECT runs append `/direct`.

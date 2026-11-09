@@ -4,6 +4,7 @@ reports/
 
 # JVM diagnostics from load tests
 gc.log*
+gc-*.log*
 *.jfr
 hs_err_pid*.log
 replay_pid*.log

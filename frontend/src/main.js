@@ -9,10 +9,17 @@ import { DataInspector } from './data-inspector.js';
 import { canStartRun } from './run-controls.js';
 import { TrafficView } from './visualization/traffic-view.js';
 import { SavedCasesPoller } from './saved-cases.js';
+import { CheckerView } from './checker.js';
+import { ViewSwitcher } from './views.js';
+
+const views = new ViewSwitcher();
+if (import.meta.hot) import.meta.hot.dispose(() => views.destroy());
 
 const traffic = new TrafficView(document.getElementById('traffic-visualization'));
 if (import.meta.hot) import.meta.hot.dispose(() => traffic.destroy());
-const savedCases = new SavedCasesPoller((runId, saved) => traffic.setSaved(runId, saved));
+const checker = new CheckerView(document.getElementById('checker'), generator);
+if (import.meta.hot) import.meta.hot.dispose(() => checker.destroy());
+const savedCases = new SavedCasesPoller((runId, stats) => traffic.setStats(runId, stats), runId => checker.autoCheck(runId));
 if (import.meta.hot) import.meta.hot.dispose(() => savedCases.stop());
 
 const el = id => document.getElementById(id);
@@ -54,17 +61,29 @@ const connections = new Connections(el('service-connections'), health => {
 if (import.meta.hot) import.meta.hot.dispose(() => connections.destroy());
 const terminal = state => ['COMPLETED','STOPPED','ERROR'].includes(state);
 function showError(message) { el('error').textContent=message; el('error').hidden=!message; }
-function estimate() { el('estimate').textContent=`${(Number(el('rate').value)*Number(el('duration').value)).toLocaleString()} planned submissions`; }
+function estimate() {
+ const planned = Number(el('rate').value) * Number(el('duration').value);
+ const warmup = Math.floor(Number(el('rate').value) * Number(el('warmup').value) / 120);
+ el('estimate').textContent = `${planned.toLocaleString()} planned submissions` + (warmup ? ` after ${warmup.toLocaleString()} warm-up requests (not stored)` : '');
+}
 const presets = [...document.querySelectorAll('[data-rate-preset]')];
 function markPreset() { for (const b of presets) b.setAttribute('aria-pressed', String(b.dataset.ratePreset === el('rate').value)); }
 for (const b of presets) b.addEventListener('click', () => { el('rate').value = b.dataset.ratePreset; estimate(); markPreset(); });
+// −50k / +50k adjust the current rate, kept within the input's min and max.
+for (const b of document.querySelectorAll('[data-rate-step]')) b.addEventListener('click', () => {
+ const rate = el('rate');
+ const next = (Number(rate.value) || 0) + Number(b.dataset.rateStep);
+ rate.value = Math.max(Number(rate.min), Math.min(Number(rate.max), next));
+ estimate(); markPreset();
+});
 el('rate').addEventListener('input', markPreset);
-el('rate').addEventListener('input',estimate);el('duration').addEventListener('input',estimate);
+el('rate').addEventListener('input',estimate);el('duration').addEventListener('input',estimate);el('warmup').addEventListener('input',estimate);
 function updateCapacityInput() {
  el('capacity').disabled = activeRun || starting || el('unlimited').checked;
  el('capacity').required = !el('unlimited').checked;
  el('capacity-field').hidden = el('unlimited').checked;
  el('use-kafka').disabled = activeRun || starting;
+ el('retry').disabled = activeRun || starting;
 }
 el('unlimited').addEventListener('change', updateCapacityInput);
 updateCapacityInput();
@@ -72,16 +91,21 @@ estimate();
 function render(run) {
  traffic.update(run);
  savedCases.track(run);
+ checker.setRun(run);
  runKnown = true; activeRun = run.finishedAt == null; updateControls();
  activeId=run.runId;
  caseReport.setRunId(run.runId);
  el('state').textContent=run.state;
  const mode = run.settings.submissionMode === 'DIRECT' ? 'Direct to PostgreSQL' : 'Through Kafka';
- el('run-id').textContent=`Run ${run.runId} · ${mode}`;
- for(const key of ['dispatched','accepted','failed','unknown','skipped','inFlight'])el(key).textContent=run[key].toLocaleString();
+ const retries = run.settings.retryEnabled ? 'retries on' : 'retries off';
+ el('run-id').textContent=`Run ${run.runId} · ${mode} · ${retries}`;
+ for(const key of ['dispatched','accepted','failed','unknown','skipped','inFlight','retried','recovered'])el(key).textContent=(run[key] ?? 0).toLocaleString();
  const accounted=run.accepted+run.failed+run.unknown+run.skipped+run.notSent;
  el('progress').max=run.planned;el('progress').value=accounted;
- el('progress-label').textContent=`${accounted.toLocaleString()} of ${run.planned.toLocaleString()} scheduled submissions accounted for`;
+ el('progress-label').textContent = run.state === 'WARMING_UP'
+  ? `Warming up: ${(run.warmupSent ?? 0).toLocaleString()} of ${(run.warmupPlanned ?? 0).toLocaleString()} warm-up requests sent (not stored)`
+  : `${accounted.toLocaleString()} of ${run.planned.toLocaleString()} scheduled submissions accounted for`
+   + (run.warmupSent ? ` · warm-up: ${run.warmupSent.toLocaleString()} sent, ${run.warmupFailed.toLocaleString()} failed` : '');
  el('not-sent').textContent=run.notSent?`${run.notSent.toLocaleString()} submissions were not sent before the run stopped.`:'';
  const finished=terminal(run.state);
  updateControls();el('stop').disabled=finished||run.state==='DRAINING';
@@ -90,10 +114,10 @@ function render(run) {
  el('download').hidden=false;el('download').href=generator.reportUrl(run.runId);
  if(run.error)showError(run.error);
  const body=el('results');body.replaceChildren();
- if(!run.recentResults.length){const row=body.insertRow();const cell=row.insertCell();cell.colSpan=5;cell.className='empty';cell.textContent='Waiting for the first response.';}
+ if(!run.recentResults.length){const row=body.insertRow();const cell=row.insertCell();cell.colSpan=6;cell.className='empty';cell.textContent='Waiting for the first response.';}
  for(const result of run.recentResults){
   const row=body.insertRow();
-  const values=[result.clientRequestId,result.outcome,result.httpStatus??'—',`${result.latencyMs.toFixed(1)} ms`,`${result.schedulingDelayMs.toFixed(1)} ms`];
+  const values=[result.clientRequestId,result.outcome,result.httpStatus??'—',result.attempts??1,`${result.latencyMs.toFixed(1)} ms`,`${result.schedulingDelayMs.toFixed(1)} ms`];
   values.forEach((value,index)=>{const cell=row.insertCell();cell.textContent=value;if(index===1){cell.className=result.outcome==='ACCEPTED'?'accepted':'problem';cell.title=result.detail;}});
  }
  if(finished&&stream){stream.close();stream=null;el('connection').textContent='Run finished';}
@@ -111,6 +135,7 @@ el('run-form').addEventListener('submit',async event=>{
  const settings=Object.fromEntries(new FormData(event.target));for(const key in settings)settings[key]=Number(settings[key]);
  settings.maxInFlight = el('unlimited').checked ? null : Number(el('capacity').value);
  settings.submissionMode = selectedMode();
+ settings.retryEnabled = el('retry').checked;
  try{const run=await generator.start(settings);render(run);subscribe(run.runId);}
  catch(error){showError(error.message);await refreshCurrentRun();}
  finally { starting=false;updateControls();updateCapacityInput(); }

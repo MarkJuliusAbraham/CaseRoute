@@ -2,8 +2,8 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CaseRoute · Traffic generator</title><script type="module" src="/src/main.js"></script></head>
 <body>
-<header><a href="/" class="brand">CaseRoute <span>/ Traffic generator</span></a><span id="connection">Local environment</span></header>
-<main id="service-connections">
+<header><a href="/" class="brand">CaseRoute <span>/ Traffic generator</span></a><div class="header-right"><span id="connection">Local environment</span><nav class="view-tabs" aria-label="Views"><a href="#" data-view-tab="simulator">Simulator</a><a href="#docs" data-view-tab="docs">Documentation</a></nav></div></header>
+<main id="service-connections" data-view="simulator">
 <div class="workspace">
 <aside class="setup" aria-label="Service configuration">
 <section class="service-section" aria-labelledby="generator-title">
@@ -11,20 +11,28 @@
 <p class="note">Controls how the client sends traffic.</p>
 <form id="run-form">
 <label for="rate">Requests per minute</label><input id="rate" name="requestsPerMinute" type="number" min="1" max="1000000" value="50" required>
-<div class="rate-presets" role="group" aria-label="Rate presets"><button type="button" data-rate-preset="10000" aria-pressed="false">10k</button><button type="button" data-rate-preset="50000" aria-pressed="false">50k</button><button type="button" data-rate-preset="100000" aria-pressed="false">100k</button></div>
+<div class="rate-presets" role="group" aria-label="Rate presets"><button type="button" data-rate-preset="10000" aria-pressed="false">10k</button><button type="button" data-rate-preset="50000" aria-pressed="false">50k</button><button type="button" data-rate-preset="100000" aria-pressed="false">100k</button><button type="button" data-rate-step="-50000" aria-label="Subtract 50,000 requests per minute">−50k</button><button type="button" data-rate-step="50000" aria-label="Add 50,000 requests per minute">+50k</button></div>
 <label for="duration">Duration in minutes</label><input id="duration" name="durationMinutes" type="number" min="1" max="60" value="1" required>
+<label for="warmup">Warm-up in seconds</label><input id="warmup" name="warmupSeconds" type="number" min="0" max="300" value="0" aria-describedby="warmup-help">
+<p id="warmup-help" class="note">Before the run, ramp from zero to the full rate over this many seconds against POST /api/cases/warmup: same path as a real submission, Kafka write included, but to a topic nothing reads, so no case is created. Opens connections and warms up the code so the run starts at full speed. 0 starts cold.</p>
 <label class="limit-toggle" for="unlimited"><input id="unlimited" type="checkbox" checked>No in-flight limit</label>
 <div id="capacity-field" hidden><label for="capacity">Maximum in flight</label><input id="capacity" name="maxInFlight" type="number" min="1" max="500" value="20" aria-describedby="capacity-help"></div>
 <p id="capacity-help" class="note">Generator concurrency: submissions waiting for an HTTP response. This is not a backend limit. No limit keeps tracking responses while allowing any number of pending requests.</p>
+<label class="limit-toggle" for="retry"><input id="retry" type="checkbox" aria-describedby="retry-help">Retry unknown outcomes</label>
+<p id="retry-help" class="note">When a reply times out, the connection fails, or the backend answers 5xx, resend the same submission (same clientRequestId) up to 5 attempts, waiting 0.5 s, 1 s, 2 s, 4 s with random jitter. Safe because both endpoints ignore duplicates. Rejections (4xx) are never retried. Retries add load, so under overload they can also make things worse.</p>
 <p id="estimate">50 planned submissions</p><p class="note">Up to 1,000,000 requests/min; at most 1,000,000 submissions per run.</p>
 </form>
 </section>
 <section class="service-section backend-section" aria-labelledby="backend-title">
 <div class="service-section-heading"><h2 id="backend-title">Backend</h2><div class="service-badge" data-service="backend"><span class="health-dot" aria-hidden="true"></span><span data-health-label role="status">Checking...</span></div></div>
 <p class="note">Receives cases and saves them in PostgreSQL. The status includes database health.</p>
-<div class="mode-controls"><h3>Write path</h3><label class="limit-toggle" for="use-kafka"><input id="use-kafka" type="checkbox" checked aria-describedby="mode-help">Buffer writes through Kafka</label>
-<p id="mode-help" class="note">On: the generator calls POST /api/cases, which stores each submission in Kafka and replies 202; a consumer saves it to PostgreSQL in batches. Off: it calls POST /api/cases/direct, which saves to PostgreSQL before replying 201. Applies to the next run, so runs can be compared.</p></div>
+<div class="mode-controls"><h3>Intake path</h3><label class="limit-toggle" for="use-kafka"><input id="use-kafka" type="checkbox" checked aria-describedby="mode-help">Buffer submissions through Kafka</label>
+<p id="mode-help" class="note">Only changes how a submission is accepted. On: POST /api/cases stores it in Kafka and replies 202; a consumer saves it to PostgreSQL in batches. Off: POST /api/cases/direct saves it to PostgreSQL before replying 201. Processing always runs through Kafka (outbox, cases.saved, cases.processed) in both modes. Applies to the next run.</p></div>
 <div class="reset-controls"><h3>Database reset</h3><p class="note">Delete saved cases before the next experiment. Tables and run reports are kept. Stop other clients first.</p><button id="clear-cases" class="danger-button" type="button" disabled>Clear saved cases</button><p id="reset-status" class="note" role="status">Checking service connections...</p></div>
+</section>
+<section class="service-section processor-section" aria-labelledby="processor-title">
+<div class="service-section-heading"><h2 id="processor-title">Processor</h2><div class="service-badge" data-service="processor"><span class="health-dot" aria-hidden="true"></span><span data-health-label role="status">Checking...</span></div></div>
+<p class="note">Separate application with no database access. Reads "case saved" events from the cases.saved Kafka topic (filled by the backend's outbox relay), simulates processing, and publishes each result to cases.processed; the backend records results on the case. Profile and failure rates are set in its application.properties.</p>
 </section>
 </aside>
 <div class="monitor-column">
@@ -39,17 +47,25 @@
 <section id="traffic-visualization" class="traffic" aria-labelledby="traffic-title">
 <div class="section-heading"><h3 id="traffic-title">Request pipeline</h3></div>
 <p class="traffic-status" data-traffic-status>Waiting for a run</p>
-<canvas role="img" aria-label="Request pipeline: Generator to Backend, then either through Kafka to PostgreSQL or directly to PostgreSQL. Counts show requests sent, accepted replies, messages waiting in Kafka, and cases saved."></canvas>
-<dl class="traffic-readouts"><div><dt>Observed requests / min</dt><dd data-rate>—</dd></div><div><dt>Configured requests / min</dt><dd data-target>—</dd></div><div><dt>In flight / capacity</dt><dd data-density>0 / —</dd></div><div><dt>Waiting in Kafka</dt><dd data-backlog>—</dd></div></dl>
+<canvas role="img" aria-label="Request pipeline: Generator to Backend, then either through Kafka to PostgreSQL or directly to PostgreSQL, then to the Processor. Counts show requests sent, accepted replies, messages waiting in Kafka, cases saved, and cases processed."></canvas>
+<dl class="traffic-readouts"><div><dt>Observed requests / min</dt><dd data-rate>—</dd></div><div><dt>Configured requests / min</dt><dd data-target>—</dd></div><div><dt>In flight / capacity</dt><dd data-density>0 / —</dd></div><div><dt>Waiting in Kafka</dt><dd data-backlog>—</dd></div><div><dt>Waiting for processing</dt><dd data-processing-backlog>—</dd></div></dl>
 <meter data-capacity min="0" max="1" value="0" aria-label="Generator in-flight capacity utilization"></meter>
 
 <p class="note" data-chart-note>Animation only: dots show submission attempts, not measured travel or confirmed arrival. At high rates, dots represent groups.</p>
-<p class="note">Backend counts replies the generator accepted. PostgreSQL counts saved cases for this run, polled every second. Waiting in Kafka is accepted minus saved, so it is approximate.</p>
+<p class="note">Backend counts replies the generator accepted. PostgreSQL counts saved cases and Processor counts routed and failed cases for this run, polled every second. Waiting in Kafka is accepted minus saved, so it is approximate. Saved cases reach the Processor through the outbox and the cases.saved topic.</p>
 </section>
-<dl class="metrics"><div><dt>Requests sent</dt><dd id="dispatched">0</dd></div><div><dt>Accepted replies</dt><dd id="accepted">0</dd></div><div><dt>Failed / mismatched</dt><dd id="failed">0</dd></div><div><dt>Outcome unknown</dt><dd id="unknown">0</dd></div><div><dt>Capacity skipped</dt><dd id="skipped">0</dd></div><div><dt>In flight</dt><dd id="inFlight">0</dd></div></dl>
+<dl class="metrics"><div><dt>Requests sent</dt><dd id="dispatched">0</dd></div><div><dt>Accepted replies</dt><dd id="accepted">0</dd></div><div><dt>Failed / mismatched</dt><dd id="failed">0</dd></div><div><dt>Outcome unknown</dt><dd id="unknown">0</dd></div><div><dt>Capacity skipped</dt><dd id="skipped">0</dd></div><div><dt>In flight</dt><dd id="inFlight">0</dd></div><div><dt>Needed a retry</dt><dd id="retried">0</dd></div><div><dt>Recovered by retry</dt><dd id="recovered">0</dd></div></dl>
 <label for="progress" id="progress-label">0 of 0 scheduled submissions accounted for</label><progress id="progress" max="1" value="0"></progress>
 <p id="not-sent"></p><p class="note">Accepted means a matching 202 (stored in Kafka) or 201 (saved directly) reply. With Kafka, the case reaches PostgreSQL shortly after. Timeouts may still have stored a case.</p>
 <a id="download" hidden>Download run report (.jsonl)</a>
+<section id="checker" class="checker" aria-labelledby="checker-title">
+<div class="section-heading"><h2 id="checker-title">Checker</h2><span data-check-verdict role="status">Not checked</span></div>
+<p class="note">Compares what the generator was told about every submission with the cases the backend saved for the run. Runs automatically once processing settles; check again any time after the run ends.</p>
+<p data-check-summary>Start a run to check it.</p>
+<dl class="metrics check-metrics" data-check-results hidden></dl>
+<details data-check-examples hidden><summary>Example client request IDs</summary><ul></ul></details>
+<button type="button" class="secondary" data-check-run disabled>Check run</button>
+</section>
 </section></div></div>
 <p id="error" role="alert" hidden></p>
 
@@ -63,11 +79,11 @@
 <div class="table-wrap"><table><thead><tr><th scope="col">Case ID</th><th scope="col">Client request ID</th><th scope="col">Subject</th><th scope="col">Status</th><th scope="col">Received at</th></tr></thead><tbody></tbody></table></div>
 <div class="report-pagination"><button type="button" class="secondary" data-report-previous>Previous</button><button type="button" class="secondary" data-report-next>Next</button></div>
 </section>
-<section id="recent-responses" class="inspector-panel" role="tabpanel" aria-labelledby="responses-tab" tabindex="0" hidden><p class="note">Latest 100 generator responses. Full history is available in the run report.</p><div class="table-wrap"><table><thead><tr><th scope="col">Client request ID</th><th scope="col">Outcome</th><th scope="col">HTTP</th><th scope="col">Latency</th><th scope="col">Schedule delay</th></tr></thead><tbody id="results"><tr><td colspan="5" class="empty">No requests sent yet.</td></tr></tbody></table></div></section>
+<section id="recent-responses" class="inspector-panel" role="tabpanel" aria-labelledby="responses-tab" tabindex="0" hidden><p class="note">Latest 100 generator responses. Full history is available in the run report.</p><div class="table-wrap"><table><thead><tr><th scope="col">Client request ID</th><th scope="col">Outcome</th><th scope="col">HTTP</th><th scope="col">Attempts</th><th scope="col">Latency</th><th scope="col">Schedule delay</th></tr></thead><tbody id="results"><tr><td colspan="6" class="empty">No requests sent yet.</td></tr></tbody></table></div></section>
 <section id="health-history" class="inspector-panel" role="tabpanel" aria-labelledby="health-tab" tabindex="0" hidden>
-<div class="report-toolbar"><label>Service <select data-history-service><option value="all">Both services</option><option value="generator">Generator</option><option value="backend">Backend + database</option></select></label><label class="history-change-filter"><input type="checkbox" data-history-changes> Status changes only</label><button type="button" class="secondary" data-history-export>Download JSON</button></div>
+<div class="report-toolbar"><label>Service <select data-history-service><option value="all">All services</option><option value="generator">Generator</option><option value="backend">Backend + database</option><option value="processor">Processor</option></select></label><label class="history-change-filter"><input type="checkbox" data-history-changes> Status changes only</label><button type="button" class="secondary" data-history-export>Download JSON</button></div>
 <p class="note">Checks are observed from this browser while the dashboard is open. Red means a failed or unhealthy check, not proof the service process stopped. Gaps are not monitored. Latest 1,000 checks retained for up to 24 hours.</p>
-<div class="health-strips"><div><strong>Generator</strong><div data-health-strip="generator" class="health-strip" role="img"></div></div><div><strong>Backend + database</strong><div data-health-strip="backend" class="health-strip" role="img"></div></div><p class="note">Last 60 observations per service · older on the left · green: passed, red: failed. Bars are checks, not elapsed time.</p></div>
+<div class="health-strips"><div><strong>Generator</strong><div data-health-strip="generator" class="health-strip" role="img"></div></div><div><strong>Backend + database</strong><div data-health-strip="backend" class="health-strip" role="img"></div></div><div><strong>Processor</strong><div data-health-strip="processor" class="health-strip" role="img"></div></div><p class="note">Last 60 observations per service · older on the left · green: passed, red: failed. Bars are checks, not elapsed time.</p></div>
 <p data-history-summary class="note" role="status"></p>
 <div class="table-wrap"><table class="health-history-table"><thead><tr><th scope="col">Checked at</th><th scope="col">Service</th><th scope="col">Status</th><th scope="col">Check time</th><th scope="col">HTTP</th><th scope="col">Change</th><th scope="col">Detail</th></tr></thead><tbody></tbody></table></div>
 </section>
@@ -79,5 +95,159 @@
 <div class="confirm-actions"><button type="submit" value="cancel" class="secondary" autofocus>Cancel</button><button type="submit" value="confirm" class="danger-solid">Delete all cases</button></div>
 </form>
 </dialog>
-</main><footer>Runs target the backend configured on the generator server. Reports remain on disk; progress is retained in memory for the latest run.</footer>
+</main>
+<main id="documentation" class="docs" data-view="docs" hidden>
+<nav class="docs-nav" aria-label="Documentation sections"><a href="#docs-overview">Overview</a><a href="#docs-frontend">Frontend</a><a href="#docs-generator">Generator</a><a href="#docs-backend">Backend</a><a href="#docs-processor">Processor</a><a href="#docs-infrastructure">Kafka &amp; PostgreSQL</a></nav>
+<div class="docs-content">
+
+<section id="docs-overview" aria-labelledby="docs-overview-title">
+<h2 id="docs-overview-title">Overview</h2>
+<p>CaseRoute is a study of reliable case submission and processing. A generator plays thousands of customers submitting support cases; the backend accepts them, saves them, and hands them to a separate processor; the results come back and are recorded on each case. Four applications, two pieces of infrastructure:</p>
+<ol class="docs-flow">
+<li><strong>Generator</strong> sends <code>POST /api/cases</code> (or <code>/direct</code>) on a fixed schedule.</li>
+<li><strong>Backend</strong> accepts it: into Kafka (<code>cases.submitted</code>, reply 202) or straight into PostgreSQL (reply 201).</li>
+<li>Saving a case also writes an <strong>outbox</strong> row in the same transaction; the outbox relay publishes it to <code>cases.saved</code>.</li>
+<li><strong>Processor</strong> reads <code>cases.saved</code>, simulates the work, and publishes the result to <code>cases.processed</code>.</li>
+<li><strong>Backend</strong> reads <code>cases.processed</code> and records ROUTED or FAILED on the case.</li>
+<li><strong>Checker</strong> (in the generator) compares what each client was told with what the system recorded.</li>
+</ol>
+<h3>Guarantees</h3>
+<ul>
+<li><strong>Idempotent by <code>clientRequestId</code>.</strong> Every submission carries a client-chosen UUID with a unique index on it. Resending never creates a second case, so clients may retry when unsure.</li>
+<li><strong>No dual writes.</strong> A case and its "case saved" event commit together (outbox), so a saved case is always handed to processing.</li>
+<li><strong>At-least-once messaging, exactly-once effect.</strong> Kafka may redeliver; every consumer's write is idempotent (insert ignores duplicates, result updates only an OPEN case).</li>
+<li><strong>Nothing silently dropped.</strong> Unreadable messages go to a <code>.DLT</code> topic instead of blocking or vanishing.</li>
+</ul>
+<table class="docs-table"><thead><tr><th scope="col">Application</th><th scope="col">Address</th><th scope="col">Role</th></tr></thead><tbody>
+<tr><td>Frontend</td><td><code>127.0.0.1:5173</code></td><td>This dashboard (Vite dev server and API proxy)</td></tr>
+<tr><td>Generator</td><td><code>127.0.0.1:8081</code></td><td>Load generator, run reports, checker</td></tr>
+<tr><td>Backend</td><td><code>localhost:8080</code></td><td>Intake API, case store, outbox relay, result writer</td></tr>
+<tr><td>Processor</td><td><code>localhost:8083</code></td><td>Simulated case processing, no database access</td></tr>
+<tr><td>Kafka / PostgreSQL</td><td><code>9092</code> / <code>5432</code></td><td>Docker Compose; Kafka UI on 8082, pgAdmin on 5050</td></tr>
+</tbody></table>
+</section>
+
+<section id="docs-frontend" aria-labelledby="docs-frontend-title">
+<h2 id="docs-frontend-title">Frontend</h2>
+<p>A plain JavaScript page served by Vite (<code>npm run dev</code>). It never calls the services directly: Vite proxies <code>/api/runs</code> to the generator, <code>/api/simulation</code> and <code>/api/backend/health</code> to the backend, and <code>/api/processor/health</code> to the processor. Override targets with <code>GENERATOR_API_URL</code>, <code>BACKEND_API_URL</code> and <code>PROCESSOR_API_URL</code>.</p>
+<h3>What each part shows</h3>
+<dl class="docs-terms">
+<dt>Service settings</dt><dd>Run settings for the generator, the intake path toggle and database reset for the backend, a description of the processor. Badges show each service's health check.</dd>
+<dt>Run controls</dt><dd>Start and stop a run. Progress streams from the generator over server-sent events every 500 ms.</dd>
+<dt>Request pipeline</dt><dd>An animated graph of the pipeline. Counts come from the run (sent, accepted) and from the backend's per-run stats polled every second (saved, open, routed, failed, in the outbox). The animation is illustrative; the numbers are measured.</dd>
+<dt>Counters</dt><dd>Final outcome per submission: accepted, failed or mismatched, unknown, skipped at capacity, plus how many needed a retry and how many a retry rescued.</dd>
+<dt>Checker</dt><dd>The reconciliation result for the run (see Generator).</dd>
+<dt>Inspect data</dt><dd>Saved cases (paged, CSV download), the latest 100 responses, and health history kept in this browser for 24 hours.</dd>
+</dl>
+</section>
+
+<section id="docs-generator" aria-labelledby="docs-generator-title">
+<h2 id="docs-generator-title">Generator</h2>
+<p>Plays the customers. It is open-loop: submissions are sent on a fixed schedule whatever the backend's speed, as real customers would, each on its own virtual thread. Only one run at a time; the latest run stays in memory and every run is written to <code>reports/&lt;runId&gt;.jsonl</code>.</p>
+<h3>Run settings</h3>
+<dl class="docs-terms">
+<dt>requestsPerMinute, durationMinutes</dt><dd>Up to 1,000,000 per minute and 1,000,000 submissions per run.</dd>
+<dt>maxInFlight</dt><dd>Optional cap on submissions awaiting a reply; above it a submission is skipped, not queued. Null means no cap.</dd>
+<dt>submissionMode</dt><dd><code>KAFKA</code> posts to <code>/api/cases</code> and expects 202; <code>DIRECT</code> posts to <code>/api/cases/direct</code> and expects 201 (or 200 for a retry of an already saved case).</dd>
+<dt>retryEnabled</dt><dd>Resend submissions whose outcome is unknown. Off by default.</dd>
+<dt>warmupSeconds</dt><dd>Before the measured run, ramp from zero to the full rate over this many seconds against <code>POST /api/cases/warmup</code>, which goes through the same path as a real submission, Kafka write included, but to a topic nothing consumes, so no case is created. That is rate × seconds ÷ 120 requests, counted separately. The run then starts at full rate on already open connections, with warmed-up code and a warmed-up Kafka producer. 0 (default) starts cold, like a sudden spike.</dd>
+</dl>
+<h3>Outcomes</h3>
+<dl class="docs-terms">
+<dt>Accepted</dt><dd>The expected status with matching fields.</dd>
+<dt>Failed / mismatched</dt><dd>A definite answer that was not acceptance: 4xx, or a reply with the wrong fields.</dd>
+<dt>Unknown</dt><dd>Timeout (15 s), connection error, or 5xx. The case may or may not exist; only the checker can tell.</dd>
+<dt>Skipped / not sent</dt><dd>Never sent: over the in-flight cap, or the run was stopped first.</dd>
+</dl>
+<h3>Retries</h3>
+<p>With retries on, an unknown outcome is resent with the same <code>clientRequestId</code>, up to 5 attempts in total. Waits double from 0.5 s to a cap of 8 s, each randomised between half and all of its value so clients that failed together do not retry together. A submission keeps its in-flight slot until its final outcome. Rejections are never retried. Tune with <code>generator.retry.max-attempts</code>, <code>base-delay</code> and <code>max-delay</code>. Retries are safe because the backend is idempotent, but they add load: under sustained overload they can deepen it.</p>
+<h3>Checker</h3>
+<p>Reconciliation: after a run, it streams the backend's ledger of saved cases for the run (<code>GET /api/simulation/cases/ledger</code>) and compares it with the outcome the generator recorded for every submission. It runs automatically once processing settles, can be repeated, and writes <code>reports/&lt;runId&gt;.check.json</code>.</p>
+<dl class="docs-terms">
+<dt>Accepted: processed / awaiting / missing</dt><dd>Missing is the alarming one: the client was promised a case that does not exist. Checked too early, it may still be waiting in Kafka.</dd>
+<dt>Unknown: saved anyway / never arrived</dt><dd>Shows what "unknown" really meant. Saved anyway: the reply was lost, not the case.</dd>
+<dt>Rejected but saved, unexpected</dt><dd>Should always be 0: a case the client was told failed, or one it never sent.</dd>
+</dl>
+<p>Verdict: <strong>Consistent</strong> (every accepted case saved and processed), <strong>Still processing</strong> (no problems, some still OPEN), or <strong>Discrepancies found</strong>.</p>
+<p class="note">The checker lives in the generator because only the client knows what it was promised. It reads the system's side through the backend's API, not the database, so it audits from the outside. A separate application would add a process without adding independence.</p>
+<h3>Endpoints</h3>
+<table class="docs-table"><tbody>
+<tr><td><code>POST /api/runs</code></td><td>Start a run with the settings above</td></tr>
+<tr><td><code>GET /api/runs/current</code>, <code>/{id}</code></td><td>Run snapshot (counts, state, latest 100 results)</td></tr>
+<tr><td><code>GET /api/runs/{id}/events</code></td><td>Server-sent progress events</td></tr>
+<tr><td><code>POST /api/runs/{id}/stop</code></td><td>Stop scheduling; in-flight requests finish</td></tr>
+<tr><td><code>GET /api/runs/{id}/report</code></td><td>The run report (JSON lines)</td></tr>
+<tr><td><code>POST</code> / <code>GET /api/runs/{id}/check</code></td><td>Run the checker / latest result</td></tr>
+</tbody></table>
+<h3>Run report</h3>
+<p>One JSON object per line: <code>run</code> (settings), <code>planned</code> (every submission), <code>result</code> (only submissions that were not accepted), <code>notSent</code>, <code>second</code> (per-second counts and latency avg, p99, max) and <code>summary</code>. Written by a background thread so disk I/O never delays sending.</p>
+</section>
+
+<section id="docs-backend" aria-labelledby="docs-backend-title">
+<h2 id="docs-backend-title">Backend</h2>
+<p>Spring Boot service that owns the <code>cases</code> and <code>outbox</code> tables. It is the only application that touches PostgreSQL.</p>
+<h3>Public API</h3>
+<table class="docs-table"><tbody>
+<tr><td><code>POST /api/cases</code></td><td>Kafka intake. Waits only for Kafka to confirm the message, then replies <strong>202</strong> with a <code>Location</code> header for the status lookup. 503 if Kafka does not confirm within 10 s.</td></tr>
+<tr><td><code>POST /api/cases/direct</code></td><td>Direct intake. Saves the case and its outbox row in one transaction, replies <strong>201</strong>. A retry of a saved submission replies <strong>200</strong> with the existing case; the same ID with different content is a <strong>409</strong>.</td></tr>
+<tr><td><code>GET /api/cases/requests/{clientRequestId}</code></td><td>Status lookup: <strong>200</strong> with the case (OPEN, ROUTED or FAILED, team, attempts, timestamps) or <strong>404</strong> while no case exists. A 404 after a 202 can mean it is still in Kafka.</td></tr>
+<tr><td><code>POST /api/cases/warmup</code></td><td>Load-test warm-up: handled exactly like <code>POST /api/cases</code>, including the Kafka write and its confirmation, but to <code>cases.warmup</code>, which nothing consumes, so no case is created. Replies <strong>204</strong> (400 if invalid, 503 if Kafka does not confirm).</td></tr>
+<tr><td><code>GET /actuator/health</code></td><td>Includes database health</td></tr>
+</tbody></table>
+<h3>Simulation API (local callers only)</h3>
+<table class="docs-table"><tbody>
+<tr><td><code>GET /api/simulation/cases</code>, <code>/export</code></td><td>Saved cases, paged or as CSV</td></tr>
+<tr><td><code>GET /api/simulation/cases/stats</code></td><td>Per-run counts: saved, open, routed, failed, awaiting relay</td></tr>
+<tr><td><code>GET /api/simulation/cases/ledger</code></td><td><code>clientRequestId,status</code> per saved case of a run, streamed (for the checker)</td></tr>
+<tr><td><code>DELETE /api/simulation/cases</code></td><td>Delete all cases and outbox rows; needs <code>X-Confirm-Reset: DELETE_ALL_CASES</code></td></tr>
+</tbody></table>
+<h3>Inside</h3>
+<dl class="docs-terms">
+<dt>Submission consumer</dt><dd>Group <code>case-writer</code>, 3 threads, batches of up to 500 from <code>cases.submitted</code>. One SQL statement per batch inserts the cases (duplicates ignored) and their outbox rows. Unreadable messages go to <code>cases.submitted.DLT</code>.</dd>
+<dt>Outbox relay</dt><dd>Every 100 ms, claims up to 1,000 outbox rows (<code>FOR UPDATE SKIP LOCKED</code>), publishes them to <code>cases.saved</code> keyed by case ID, waits for Kafka, then deletes them. A crash before the delete republishes; the processor tolerates that.</dd>
+<dt>Result consumer</dt><dd>Group <code>case-result-writer</code> on <code>cases.processed</code>. Records status, category, team and attempts, only on cases still OPEN, so a redelivered result changes nothing. Unusable results go to <code>cases.processed.DLT</code>.</dd>
+<dt>Status constraint</dt><dd>On startup, the <code>cases_status_check</code> constraint is rebuilt from the status enum, since Hibernate never updates one it created.</dd>
+</dl>
+</section>
+
+<section id="docs-processor" aria-labelledby="docs-processor-title">
+<h2 id="docs-processor-title">Processor</h2>
+<p>A separate Spring Boot application that works purely through Kafka: it reads <code>cases.saved</code>, simulates the work, and publishes each result to <code>cases.processed</code>. It has no database access; the backend records results.</p>
+<h3>Concurrency</h3>
+<p>Six Kafka consumers (one per partition), each on its own thread, fetch up to 2,000 messages and start every case on its own virtual thread, up to 20,000 in flight. Cases finish in any order, so a slow case never holds back the rest. Per partition, the committed offset only advances to the oldest case still running: after a crash, unfinished cases are redelivered and none is skipped. When the in-flight limit is reached, consumers pause fetching and the backlog waits in Kafka.</p>
+<h3>Simulated work</h3>
+<p>Each case's plan is derived from its <code>clientRequestId</code>, so a redelivered case behaves the same way. Defaults (<code>caseroute.processing.*</code>):</p>
+<ul>
+<li>Takes 0.5 to 1.5 s (mean 1 s); 1% are slow and take 10 s.</li>
+<li>2% chance per attempt of a transient error, retried after 500 ms, up to 3 attempts; exhausting them fails the case.</li>
+<li>0.1% fail permanently.</li>
+<li>Routed by category: Billing Support, Technical Support or Account Services.</li>
+</ul>
+<p>Failed cases are also copied to <code>cases.saved.DLT</code> with the reason in a header. The work is <code>Thread.sleep</code>: it models waiting on other systems, not CPU, so throughput is roughly in-flight cases divided by time per case.</p>
+<p>Port 8083; <code>GET /actuator/health</code>.</p>
+</section>
+
+<section id="docs-infrastructure" aria-labelledby="docs-infrastructure-title">
+<h2 id="docs-infrastructure-title">Kafka &amp; PostgreSQL</h2>
+<p>Both run in Docker Compose (<code>docker compose up -d</code>). <code>docker compose down</code> keeps the data volumes; add <code>-v</code> to delete them.</p>
+<h3>Kafka topics</h3>
+<p>Created by the backend at startup. Kept for 6 hours (1-hour segments), whether consumed or not.</p>
+<table class="docs-table"><thead><tr><th scope="col">Topic</th><th scope="col">Partitions</th><th scope="col">Producer → consumer</th></tr></thead><tbody>
+<tr><td><code>cases.submitted</code></td><td>6</td><td>Backend intake → backend submission consumer</td></tr>
+<tr><td><code>cases.saved</code></td><td>6</td><td>Outbox relay → processor</td></tr>
+<tr><td><code>cases.processed</code></td><td>6</td><td>Processor → backend result consumer</td></tr>
+<tr><td><code>cases.warmup</code></td><td>6</td><td>Warm-up endpoint → nobody (kept 1 hour)</td></tr>
+<tr><td><code>*.DLT</code></td><td>1</td><td>Unreadable or failed messages, for inspection</td></tr>
+</tbody></table>
+<p>Producers use <code>acks=all</code> with idempotence. Kafka UI: <code>localhost:8082</code>.</p>
+<h3>PostgreSQL</h3>
+<p>Database <code>caseroutedb</code> on <code>localhost:5432</code>; pgAdmin on <code>localhost:5050</code>.</p>
+<dl class="docs-terms">
+<dt>cases</dt><dd>One row per case; unique <code>client_request_id</code>, indexed <code>test_run_id</code>, status plus the processor's result columns.</dd>
+<dt>outbox</dt><dd>"Case saved" events waiting to be published. Normally near empty; a growing count means the relay is behind.</dd>
+</dl>
+</section>
+</div>
+</main>
+<footer>Runs target the backend configured on the generator server. Reports remain on disk; progress is retained in memory for the latest run.</footer>
 </body></html>

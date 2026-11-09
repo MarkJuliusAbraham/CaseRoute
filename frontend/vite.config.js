@@ -8,6 +8,10 @@ export default defineConfig(({ mode }) => {
             target: backend, changeOrigin: true,
             rewrite: () => '/actuator/health',
         },
+        '/api/processor/health': {
+            target: env.PROCESSOR_API_URL || 'http://127.0.0.1:8083', changeOrigin: true,
+            rewrite: () => '/actuator/health',
+        },
         '/api/simulation': { target: backend, changeOrigin: true },
         '/api/runs': {
             target: env.GENERATOR_API_URL || 'http://127.0.0.1:8081',

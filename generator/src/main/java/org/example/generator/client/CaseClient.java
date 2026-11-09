@@ -44,8 +44,9 @@ public class CaseClient {
                     .build();
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             int status = response.statusCode();
-            int expected = mode == SubmissionMode.DIRECT ? 201 : 202;
-            if (status != expected) {
+            // Direct: 201 for a new case, or 200 when a retry finds the case its earlier attempt saved.
+            boolean expected = mode == SubmissionMode.DIRECT ? status == 201 || status == 200 : status == 202;
+            if (!expected) {
                 return result(submission, status >= 500 ? "UNKNOWN" : "REJECTED", status, null,
                         start, schedulingDelayMs, "HTTP " + status);
             }
@@ -81,9 +82,30 @@ public class CaseClient {
         }
     }
 
+    /**
+     * Sends a submission to the backend's warm-up endpoint ({@code POST /api/cases/warmup}), which validates it
+     * like a real submission but stores nothing. Same HTTP client, so the connections it opens are reused by
+     * the measured run. Returns whether the backend answered 204.
+     */
+    public boolean warmUp(Submission submission) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(target + "/warmup"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(submission)))
+                    .build();
+            return client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() == 204;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
     private SubmissionResult result(Submission submission, String outcome, Integer status, String caseId,
             long start, double delay, String detail) {
         return new SubmissionResult(submission.clientRequestId(), outcome, status, caseId,
-                (System.nanoTime() - start) / 1_000_000.0, delay, detail, Instant.now());
+                (System.nanoTime() - start) / 1_000_000.0, delay, detail, Instant.now(), 1);
     }
 }

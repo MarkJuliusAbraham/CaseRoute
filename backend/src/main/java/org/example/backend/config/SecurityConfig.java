@@ -21,7 +21,13 @@ public class SecurityConfig {
                 .matcher(HttpMethod.POST, "/api/cases");
         var createCaseDirectly = PathPatternRequestMatcher.withDefaults()
                 .matcher(HttpMethod.POST, "/api/cases/direct");
-        RequestMatcher createCase = request -> submitCase.matches(request) || createCaseDirectly.matches(request);
+        var warmUp = PathPatternRequestMatcher.withDefaults()
+                .matcher(HttpMethod.POST, "/api/cases/warmup");
+        RequestMatcher createCase = request -> submitCase.matches(request) || createCaseDirectly.matches(request)
+                || warmUp.matches(request);
+        // Client request IDs are random UUIDs known only to the submitter, so the ID itself grants access.
+        var caseStatus = PathPatternRequestMatcher.withDefaults()
+                .matcher(HttpMethod.GET, "/api/cases/requests/{clientRequestId}");
 
         var resetPath = PathPatternRequestMatcher.withDefaults()
                 .matcher(HttpMethod.DELETE, "/api/simulation/cases");
@@ -32,14 +38,17 @@ public class SecurityConfig {
 
         var reportPath = PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/simulation/cases");
         var exportPath = PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/simulation/cases/export");
+        var statsPath = PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/simulation/cases/stats");
+        var ledgerPath = PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/simulation/cases/ledger");
         RequestMatcher localReport = request -> reportsEnabled
-                && (reportPath.matches(request) || exportPath.matches(request))
+                && (reportPath.matches(request) || exportPath.matches(request) || statsPath.matches(request)
+                        || ledgerPath.matches(request))
                 && (ipv4Loopback.matches(request) || ipv6Loopback.matches(request));
 
         http
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
-                        .requestMatchers(createCase, localReset, localReport).permitAll()
+                        .requestMatchers(createCase, caseStatus, localReset, localReport).permitAll()
                         .anyRequest().authenticated()
                 )
                 .csrf(csrf -> csrf.ignoringRequestMatchers(createCase, localReset));

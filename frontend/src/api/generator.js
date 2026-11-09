@@ -23,5 +23,7 @@ export const generator = {
     stop: id => request(`${base}/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
     current: () => request(`${base}/current`),
     events: id => new EventSource(`${base}/${encodeURIComponent(id)}/events`),
+    check: id => request(`${base}/${encodeURIComponent(id)}/check`, { method: 'POST' }),
+    latestCheck: id => request(`${base}/${encodeURIComponent(id)}/check`),
     reportUrl: id => `${base}/${encodeURIComponent(id)}/report`,
 };

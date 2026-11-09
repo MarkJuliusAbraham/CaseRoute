@@ -83,3 +83,54 @@ html{scrollbar-gutter:stable}html.inspector-open{overflow:hidden}
 /* Quick rate presets under Requests per minute. */
 .rate-presets{display:flex;gap:8px;margin-top:8px}.rate-presets button{width:auto;flex:1;margin:0;padding:6px 10px;font-size:13px;background:transparent;color:var(--accent)}
 .rate-presets button:hover:not(:disabled){background:#dfebe5;color:var(--accent)}.rate-presets button[aria-pressed="true"]{background:var(--accent);color:white}
+.rate-presets [data-rate-step]{border-style:dashed}
+
+/* Five pipeline stages; readouts wrap instead of squeezing. */
+.processor-section{margin-top:30px;padding-top:24px;border-top:1px solid var(--line)}
+.traffic-readouts{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+@container(max-width:599px){.traffic canvas{height:780px}}
+@media(max-width:480px){.traffic canvas{height:780px}}
+@media(max-width:760px){.processor-section{grid-column:1/-1;margin-top:0}}
+
+/* Two-dimensional pipeline graph. */
+.traffic canvas{height:400px}
+@container(max-width:639px){.traffic canvas{height:700px}}
+@media(max-width:480px){.traffic canvas{height:700px}}
+
+/* Header tabs: Simulator and Documentation. */
+header{align-items:center}.header-right{display:flex;align-items:center;gap:24px}.header-right #connection{font-size:14px;color:var(--muted)}
+.view-tabs{display:flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--paper)}
+.view-tabs a{padding:5px 12px;border-radius:6px;font-size:14px;font-weight:600;color:var(--muted);text-decoration:none}
+.view-tabs a:hover{color:var(--accent)}.view-tabs a[aria-current="page"]{background:var(--surface);color:var(--accent);box-shadow:0 1px 3px #192b2a26}
+main[hidden]{display:none}
+@media(max-width:760px){.header-right{justify-content:space-between;width:100%}}
+
+/* Retry toggle sits under the in-flight note. */
+#retry-help{margin-top:6px}
+
+/* Checker. */
+.checker{margin-top:30px;padding-top:22px;border-top:1px solid var(--line)}
+.checker [data-check-verdict]{font-size:13px;font-weight:600;padding:4px 12px;border-radius:6px;background:#eceeec;color:var(--muted)}
+.checker [data-check-verdict][data-verdict="CONSISTENT"]{background:#dfebe5;color:#18513e}
+.checker [data-check-verdict][data-verdict="PENDING"]{background:#f3ead2;color:#6b4e0e}
+.checker [data-check-verdict][data-verdict="DISCREPANCIES"]{background:#f6dedb;color:var(--danger)}
+.checker [data-check-summary]{color:var(--ink);font-size:14px}
+.check-metrics{margin:18px 0}.check-metrics dd{font-size:24px}.check-metrics dd.problem{color:var(--danger)}
+.checker details{font-size:13px;margin-bottom:8px}.checker summary{cursor:pointer;color:var(--accent)}.checker ul{font:12px/1.7 Consolas,monospace;padding-left:18px;overflow-wrap:anywhere}
+.checker [data-check-run]{width:auto}
+.metrics{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+
+/* Documentation view. */
+.docs{display:grid;grid-template-columns:200px minmax(0,1fr);gap:44px;align-items:start}
+.docs-nav{position:sticky;top:20px;display:flex;flex-direction:column;gap:2px;border-left:1px solid var(--line)}
+.docs-nav a{padding:6px 14px;margin-left:-1px;border-left:2px solid transparent;font-size:14px;color:var(--muted);text-decoration:none}
+.docs-nav a:hover{color:var(--accent)}.docs-nav a[aria-current="location"]{border-left-color:var(--accent);color:var(--accent);font-weight:600}
+.docs-content{max-width:780px}.docs-content section{padding-bottom:36px;margin-bottom:36px;border-bottom:1px solid var(--line);scroll-margin-top:20px}
+.docs-content section:last-child{border-bottom:0}.docs-content h2{font-size:26px;margin-bottom:6px}.docs-content h3{font-size:16px;margin:26px 0 4px}
+.docs-content p,.docs-content li,.docs-content dd{font-size:15px;color:var(--muted)}.docs-content strong{color:var(--ink)}.docs-content li{margin:6px 0}
+.docs-content code{font:13px Consolas,monospace;background:#e9ece8;color:var(--ink);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.docs-terms dt{font-size:15px;font-weight:600;color:var(--ink);margin-top:14px}.docs-terms dd{margin:3px 0 0;line-height:1.6}
+.docs-table{margin:12px 0;white-space:normal}.docs-table td,.docs-table th{white-space:normal;vertical-align:top;padding:10px 12px;font-size:14px}
+.docs-table td:first-child{font-family:inherit;font-size:14px;min-width:150px}.docs-table td{color:var(--muted)}
+.docs-flow{padding-left:22px}
+@media(max-width:760px){.docs{grid-template-columns:1fr;gap:20px}.docs-nav{position:static;flex-direction:row;flex-wrap:wrap;border-left:0;border-bottom:1px solid var(--line);padding-bottom:10px}.docs-nav a{border-left:0;padding:4px 10px 4px 0}.docs-nav a[aria-current="location"]{border-left:0}}

@@ -32,7 +32,7 @@ export class HealthHistoryView {
         for (const record of records.slice(0, 100)) {
             const row = body.insertRow();
             const values = [new Date(record.at).toLocaleString(),
-                record.service === 'generator' ? 'Generator' : 'Backend + database',
+                record.service === 'generator' ? 'Generator' : record.service === 'processor' ? 'Processor' : 'Backend + database',
                 record.live ? 'Live' : 'Offline / unhealthy', `${Math.round(record.durationMs)} ms`,
                 record.httpStatus ?? 'No response', record.transition,
                 record.detail + (record.gapMs > 10000 ? ' · Observation gap; status between checks is unknown.' : '')];
@@ -46,7 +46,7 @@ export class HealthHistoryView {
         }
         this.root.querySelector('[data-history-summary]').textContent = `${records.length} matching checks retained · Showing latest ${Math.min(100,records.length)}. `
             + (this.history.persistent ? 'Stored in this browser.' : 'Browser storage unavailable; history is in memory only.');
-        for (const service of ['generator','backend']) {
+        for (const service of ['generator','backend','processor']) {
             const strip = this.root.querySelector(`[data-health-strip="${service}"]`);strip.replaceChildren();
             const observations = this.history.select(service).slice(0, 60).toReversed();
             for (const record of observations) {

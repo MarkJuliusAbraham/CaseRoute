@@ -171,7 +171,7 @@
                          SafepointTimeout names any thread that takes over 500 ms to stop for a safepoint.
                          -UseThreadPriorities runs all threads at normal OS priority (the Linux default); on Windows,
                          Tomcat's lowest-priority utility threads were starved under load and stalled safepoints for seconds. -->
-                    <jvmArguments>-Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:+SafepointTimeout -XX:SafepointTimeoutDelay=500 -XX:-UseThreadPriorities</jvmArguments>
+                    <jvmArguments>-Xlog:gc*,safepoint:file=gc-backend.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:+SafepointTimeout -XX:SafepointTimeoutDelay=500 -XX:-UseThreadPriorities</jvmArguments>
                 </configuration>
             </plugin>
         </plugins>

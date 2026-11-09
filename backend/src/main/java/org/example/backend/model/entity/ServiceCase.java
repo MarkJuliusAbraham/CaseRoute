@@ -39,6 +39,19 @@ public class ServiceCase {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
+    // Results from the processor application, recorded by CaseProcessedConsumer (cases.processed).
+    @Column(length = 30)
+    private String category;
+
+    @Column(name = "assigned_team", length = 50)
+    private String assignedTeam;
+
+    @Column(name = "processing_attempts")
+    private Integer processingAttempts;
+
+    @Column(name = "processed_at")
+    private Instant processedAt;
+
     public ServiceCase(UUID clientRequestId, UUID testRunId, String subject, String description) {
         this.clientRequestId = java.util.Objects.requireNonNull(clientRequestId);
         this.testRunId = testRunId;

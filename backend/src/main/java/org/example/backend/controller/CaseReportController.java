@@ -1,7 +1,9 @@
 package org.example.backend.controller;
 
 import org.example.backend.model.dto.cases.CaseReportPage;
+import org.example.backend.model.dto.cases.CaseStats;
 import org.example.backend.service.CaseReportService;
+import org.example.backend.service.CaseStatsService;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
@@ -17,7 +19,25 @@ import java.util.UUID;
 @ConditionalOnProperty(name = "simulation.reports-enabled", havingValue = "true")
 public class CaseReportController {
     private final CaseReportService reports;
-    public CaseReportController(CaseReportService reports) { this.reports = reports; }
+    private final CaseStatsService stats;
+    public CaseReportController(CaseReportService reports, CaseStatsService stats) { this.reports = reports; this.stats = stats; }
+
+    /** Pipeline counts for the dashboard: saved, processed (routed/failed) and waiting in the outbox. */
+    @GetMapping("/stats")
+    public CaseStats stats(@RequestParam(required = false) UUID testRunId) {
+        return stats.stats(testRunId);
+    }
+
+    /** Every saved case of a run as {@code clientRequestId,status} lines, for the generator's checker. */
+    @GetMapping(value = "/ledger", produces = "text/plain")
+    public ResponseEntity<StreamingResponseBody> ledger(@RequestParam UUID testRunId) {
+        StreamingResponseBody body = output -> {
+            var writer = new java.io.BufferedWriter(new OutputStreamWriter(output, StandardCharsets.UTF_8), 1 << 16);
+            stats.writeLedger(testRunId, writer);
+            writer.flush();
+        };
+        return ResponseEntity.ok().contentType(MediaType.TEXT_PLAIN).body(body);
+    }
 
     @GetMapping
     public CaseReportPage page(@RequestParam(required = false) UUID testRunId,

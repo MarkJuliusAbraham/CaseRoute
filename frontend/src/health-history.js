@@ -10,7 +10,7 @@ export class HealthHistory {
         try {
             const saved = JSON.parse(storage?.getItem(KEY) || '[]');
             if (Array.isArray(saved)) this.records = saved.filter(value =>
-                ['generator', 'backend'].includes(value.service) && typeof value.live === 'boolean'
+                ['generator', 'backend', 'processor'].includes(value.service) && typeof value.live === 'boolean'
                 && Number.isFinite(value.at) && Number.isFinite(value.durationMs)).slice(-LIMIT);
         } catch { this.persistent = false; }
         this.prune(Date.now());

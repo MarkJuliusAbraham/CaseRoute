@@ -4,7 +4,7 @@ export class Connections {
         this.root = root;
         this.onChange = onChange;
         this.onCheck = onCheck;
-        this.health = { generator: false, backend: false };
+        this.health = { generator: false, backend: false, processor: false };
         this.stopped = false;
         this.controller = new AbortController();
         this.poll();
@@ -45,6 +45,7 @@ export class Connections {
         await Promise.all([
             this.check('generator', '/api/runs/health'),
             this.check('backend', '/api/backend/health'),
+            this.check('processor', '/api/processor/health'),
         ]);
         if (this.stopped) return;
         this.onChange(this.health);

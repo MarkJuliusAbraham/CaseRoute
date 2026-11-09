@@ -15,7 +15,7 @@
            safepoint for over 500 ms, and all threads at normal OS priority (low-priority Tomcat threads were
            starved under load on Windows and froze the scheduler for seconds). -->
       <optimizedLaunch>false</optimizedLaunch>
-      <jvmArguments>-Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:+SafepointTimeout -XX:SafepointTimeoutDelay=500 -XX:-UseThreadPriorities</jvmArguments>
+      <jvmArguments>-Xlog:gc*,safepoint:file=gc-generator.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:+SafepointTimeout -XX:SafepointTimeoutDelay=500 -XX:-UseThreadPriorities</jvmArguments>
     </configuration>
   </plugin></plugins></build>
 </project>
