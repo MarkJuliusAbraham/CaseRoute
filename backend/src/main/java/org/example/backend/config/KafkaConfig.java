@@ -1,16 +1,21 @@
 package org.example.backend.config;
 
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.config.TopicConfig;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.kafka.config.TopicBuilder;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.FixedBackOff;
 
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * Topics are created (or updated, see {@code spring.kafka.admin.modify-topic-configs}) at startup.
@@ -84,6 +89,30 @@ public class KafkaConfig {
                 .config(TopicConfig.RETENTION_MS_CONFIG, String.valueOf(Duration.ofHours(1).toMillis()))
                 .config(TopicConfig.SEGMENT_MS_CONFIG, String.valueOf(Duration.ofMinutes(10).toMillis()))
                 .build();
+    }
+
+    /**
+     * Background sends: the outbox relay ({@code cases.saved}) and dead-letter topics. Uses Spring Boot's
+     * auto-configured producer (settings from {@code spring.kafka.producer.*}).
+     */
+    @Bean
+    @Primary
+    KafkaTemplate<String, String> kafkaTemplate(ProducerFactory<String, String> producerFactory) {
+        return new KafkaTemplate<>(producerFactory);
+    }
+
+    /**
+     * Customer-facing sends: {@code POST /api/cases} and its warm-up. Every request waits for its own
+     * confirmation, so they get their own producer (same settings, separate buffer, network thread and
+     * connection). The relay publishes in bursts of up to 1,000 messages; on a shared producer, a customer's
+     * message could wait behind them. A producer has exactly one network thread, so separating the work
+     * means separate producers.
+     */
+    @Bean
+    KafkaTemplate<String, String> intakeKafkaTemplate(ProducerFactory<String, String> producerFactory) {
+        // The overrides make Spring create a copy of the producer factory, and so a second producer,
+        // which this template closes on shutdown.
+        return new KafkaTemplate<>(producerFactory, Map.of(ProducerConfig.CLIENT_ID_CONFIG, "backend-intake"));
     }
 
     /**

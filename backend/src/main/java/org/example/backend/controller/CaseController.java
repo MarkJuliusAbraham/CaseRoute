@@ -55,6 +55,17 @@ public class CaseController {
     }
 
     /**
+     * Connection test for load tests: replies 202 with the same fields as {@code POST /api/cases}, immediately,
+     * and does nothing else: no Kafka, no database, no processing. Still parsed and validated, and still goes
+     * through Tomcat and security, so it measures the generator plus the backend's HTTP layer with zero work.
+     */
+    @PostMapping("/noop")
+    public ResponseEntity<SubmissionAcceptedResponse> connectionTest(@Valid @RequestBody CreateCaseRequest request) {
+        return ResponseEntity.accepted().body(new SubmissionAcceptedResponse(request.clientRequestId(),
+                request.testRunId(), SubmissionAcceptedResponse.ACCEPTED, java.time.Instant.now()));
+    }
+
+    /**
      * Warm-up for load tests: handled exactly like {@code POST /api/cases} (connection, security, JSON,
      * validation, and a Kafka write waiting for confirmation), but written to the {@code cases.warmup} topic,
      * which nothing consumes, so no case is ever created. Replies 204, or 503 if Kafka does not confirm.

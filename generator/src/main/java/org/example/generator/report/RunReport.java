@@ -2,7 +2,6 @@ package org.example.generator.report;
 
 import org.example.generator.model.RunSettings;
 import org.example.generator.model.RunSnapshot;
-import org.example.generator.model.Submission;
 import org.example.generator.model.SubmissionResult;
 import tools.jackson.databind.ObjectMapper;
 
@@ -29,11 +28,14 @@ import static java.nio.file.StandardOpenOption.CREATE_NEW;
  * Writes {@code <runId>.jsonl}. Record types, one JSON object per line:
  * <ul>
  *   <li>{@code run}: settings, first line.</li>
- *   <li>{@code planned}: every submission, written before dispatch starts.</li>
+ *   <li>{@code plan}: how many submissions are planned (null for an endless run) and how their clientRequestIds
+ *       are formed. Submission n has the run id with n added to its low 64 bits, so no per-submission list is
+ *       needed and the file does not grow with healthy traffic.</li>
  *   <li>{@code result}: only submissions that were NOT accepted (failed, unknown, skipped).
- *       A planned submission with no result or notSent line was accepted.</li>
- *   <li>{@code notSent}: submissions never dispatched because the run stopped early.</li>
- *   <li>{@code second}: per-second aggregates by the time responses were recorded.</li>
+ *       A planned submission with no result line and outside the notSent range was accepted.</li>
+ *   <li>{@code notSent}: the range of sequence numbers never dispatched because the run stopped early.</li>
+ *   <li>{@code second}: per-second aggregates by the time responses were recorded, including connections the
+ *       HTTP client opened and closed in that second (Jetty only).</li>
  *   <li>{@code summary}: final counts, last line.</li>
  * </ul>
  * Callers never touch the disk: lines go to a queue and one background thread writes them through a single
@@ -49,18 +51,19 @@ public class RunReport {
     private final Thread writer;
     private volatile IOException failure;
 
-    public RunReport(Path directory, UUID runId, RunSettings settings, List<Submission> submissions,
-            ObjectMapper json) throws IOException {
+    public RunReport(Path directory, UUID runId, RunSettings settings, ObjectMapper json) throws IOException {
         this.json = json;
         Files.createDirectories(directory);
         this.path = directory.resolve(runId + ".jsonl");
         try (BufferedWriter out = Files.newBufferedWriter(path, CREATE_NEW)) {
             out.write(json.writeValueAsString(Map.of("type", "run", "runId", runId, "settings", settings)));
             out.newLine();
-            for (Submission submission : submissions) {
-                out.write(json.writeValueAsString(Map.of("type", "planned", "submission", submission)));
-                out.newLine();
-            }
+            var plan = new LinkedHashMap<String, Object>();
+            plan.put("type", "plan");
+            plan.put("planned", settings.endless() ? null : settings.planned());
+            plan.put("clientRequestIds", "submission n (1, 2, ...): the run id with n added to its low 64 bits");
+            out.write(json.writeValueAsString(plan));
+            out.newLine();
         }
         BufferedWriter out = Files.newBufferedWriter(path, APPEND);
         writer = Thread.ofPlatform().daemon().name("report-writer-" + runId).start(() -> writeLoop(out));
@@ -76,10 +79,17 @@ public class RunReport {
         }
     }
 
-    /** Submissions that were never dispatched because the run stopped. */
-    public void recordNotSent(List<Submission> submissions) {
-        for (Submission submission : submissions) {
-            lines.add(json.writeValueAsString(Map.of("type", "notSent", "clientRequestId", submission.clientRequestId())));
+    /** Sequence numbers {@code from}..{@code to} (inclusive) were never dispatched because the run stopped. */
+    public void recordNotSent(long from, long to) {
+        lines.add(json.writeValueAsString(Map.of("type", "notSent", "fromSequence", from, "toSequence", to,
+                "count", to - from + 1)));
+    }
+
+    /** A connection the HTTP client opened (true) or closed (false), counted in the current second. */
+    public void connectionEvent(boolean opened) {
+        synchronized (this) {
+            var stats = seconds.computeIfAbsent(Instant.now().getEpochSecond(), SecondStats::new);
+            if (opened) stats.connectionsOpened++; else stats.connectionsClosed++;
         }
     }
 
@@ -101,6 +111,16 @@ public class RunReport {
     public IOException failure() { return failure; }
 
     public Path path() { return path; }
+
+    /** Writes a separate JSON file next to the report, e.g. {@code <runId>.resend-1.json}. Best effort. */
+    public void writeSidecar(String suffix, Object value) {
+        try {
+            Files.writeString(path.resolveSibling(path.getFileName().toString().replace(".jsonl", "") + suffix),
+                    json.writeValueAsString(value));
+        } catch (IOException | RuntimeException ignored) {
+            // The in-memory snapshot still has the numbers.
+        }
+    }
 
     private void writeLoop(BufferedWriter out) {
         List<String> batch = new ArrayList<>();
@@ -138,7 +158,8 @@ public class RunReport {
 
     private static final class SecondStats {
         private final long second;
-        private long accepted, failed, unknown, skipped;
+        private long accepted, failed, unknown, skipped, blocked;
+        private long connectionsOpened, connectionsClosed;
         private double latencySum, latencyMax, schedulingDelayMax;
         private double[] latencies = new double[256];
         private int latencyCount;
@@ -150,6 +171,7 @@ public class RunReport {
                 case "ACCEPTED" -> accepted++;
                 case "UNKNOWN" -> unknown++;
                 case "SKIPPED" -> skipped++;
+                case "BLOCKED" -> blocked++;
                 default -> failed++;
             }
             schedulingDelayMax = Math.max(schedulingDelayMax, result.schedulingDelayMs());
@@ -172,13 +194,16 @@ public class RunReport {
             var record = new LinkedHashMap<String, Object>();
             record.put("type", "second");
             record.put("second", Instant.ofEpochSecond(second).toString());
-            record.put("responses", accepted + failed + unknown);
+            record.put("responses", accepted + failed + unknown + blocked);
             record.put("accepted", accepted);
             record.put("failed", failed);
             record.put("unknown", unknown);
             record.put("skipped", skipped);
+            record.put("blocked", blocked);
             record.put("latencyMs", latency);
             record.put("maxSchedulingDelayMs", round(schedulingDelayMax));
+            record.put("connectionsOpened", connectionsOpened);
+            record.put("connectionsClosed", connectionsClosed);
             return record;
         }
 

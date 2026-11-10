@@ -54,6 +54,7 @@ class CaseConsumerLoopTests {
     @Autowired ConsumerFactory<String, String> consumers;
     @Autowired ObjectMapper json;
     @Autowired ProcessingProfile profile;
+    @Autowired PipelineController pipeline;
 
     @Test
     void everyCaseGetsOneResultAndSlowCasesDoNotBlockFastOnes() throws Exception {
@@ -78,6 +79,7 @@ class CaseConsumerLoopTests {
             while (results.size() < n && System.nanoTime() < deadline) {
                 for (ConsumerRecord<String, String> record : reader.poll(Duration.ofMillis(200))) {
                     UUID id = UUID.fromString(json.readTree(record.value()).path("caseId").asText());
+                    if (!plans.containsKey(id)) continue; // another test's case
                     results.merge(id, 1, Integer::sum);
                     if (firstResult == null) firstResult = Instant.now();
                 }
@@ -91,5 +93,43 @@ class CaseConsumerLoopTests {
         // cases: about 16 s or more. Without the pause, the fast cases finish while the first slow ones still run.
         assertNotNull(fastDone);
         assertTrue(fastDone.toMillis() < 4000, "fast cases finished in " + fastDone.toMillis() + " ms");
+    }
+
+    @Test
+    void pausedProcessorLeavesCasesInKafkaAndProcessesThemOnResume() throws Exception {
+        java.util.Set<UUID> ids = new java.util.HashSet<>();
+        pipeline.set(new PipelineController.PipelineState(true));
+        try (Consumer<String, String> reader = consumers.createConsumer("test-" + UUID.randomUUID(), "paused")) {
+            reader.subscribe(List.of("cases.processed"));
+            reader.poll(Duration.ofSeconds(2)); // join the group first
+            try {
+                assertTrue(pipeline.state().paused());
+                for (int i = 0; i < 20; i++) {
+                    UUID caseId = UUID.randomUUID();
+                    ids.add(caseId);
+                    kafka.send("cases.saved", caseId.toString(), json.writeValueAsString(
+                            new CaseSavedMessage(i, caseId, UUID.randomUUID(), null, Instant.now())));
+                }
+                kafka.flush();
+                long quietUntil = System.nanoTime() + Duration.ofSeconds(4).toNanos();
+                while (System.nanoTime() < quietUntil) {
+                    for (ConsumerRecord<String, String> record : reader.poll(Duration.ofMillis(200))) {
+                        assertFalse(ids.contains(UUID.fromString(json.readTree(record.value()).path("caseId").asText())),
+                                "no case is processed while paused");
+                    }
+                }
+            } finally {
+                pipeline.set(new PipelineController.PipelineState(false));
+            }
+            java.util.Set<UUID> done = new java.util.HashSet<>();
+            long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+            while (done.size() < ids.size() && System.nanoTime() < deadline) {
+                for (ConsumerRecord<String, String> record : reader.poll(Duration.ofMillis(200))) {
+                    UUID id = UUID.fromString(json.readTree(record.value()).path("caseId").asText());
+                    if (ids.contains(id)) done.add(id);
+                }
+            }
+            assertEquals(ids, done, "every held-back case is processed after resuming");
+        }
     }
 }

@@ -54,6 +54,8 @@ public class CaseConsumerLoop implements SmartLifecycle {
     private final List<Thread> threads = new ArrayList<>();
     private final List<Consumer<String, String>> openConsumers = new ArrayList<>();
     private volatile boolean running;
+    /** Set from the frontend to isolate intake: consumers stop fetching; cases already started finish. */
+    private volatile boolean paused;
 
     public CaseConsumerLoop(ConsumerFactory<String, String> consumers, CaseProcessor processor,
             @Value("${caseroute.kafka.saved-topic}") String topic,
@@ -102,8 +104,8 @@ public class CaseConsumerLoop implements SmartLifecycle {
         });
         try {
             while (running) {
-                // Backpressure: fetch only when a full fetch fits in the in-flight limit.
-                if (inFlight.availablePermits() < maxPollRecords) consumer.pause(consumer.assignment());
+                // Backpressure: fetch only when a full fetch fits in the in-flight limit, and never while paused.
+                if (paused || inFlight.availablePermits() < maxPollRecords) consumer.pause(consumer.assignment());
                 else consumer.resume(consumer.paused());
 
                 ConsumerRecords<String, String> records = consumer.poll(POLL);
@@ -168,4 +170,16 @@ public class CaseConsumerLoop implements SmartLifecycle {
 
     @Override
     public boolean isRunning() { return running; }
+
+    /**
+     * Pauses or resumes fetching from cases.saved. The consumers keep polling (so they stay in the group) but
+     * receive nothing; cases already in progress finish. The backlog waits in Kafka. In memory only: a restart
+     * always starts unpaused.
+     */
+    public void setPaused(boolean pause) {
+        if (pause != paused) log.info("Processing {}", pause ? "PAUSED" : "resumed");
+        paused = pause;
+    }
+
+    public boolean isPaused() { return paused; }
 }

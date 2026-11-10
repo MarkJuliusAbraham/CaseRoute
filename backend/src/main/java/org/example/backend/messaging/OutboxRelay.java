@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
+import org.example.backend.service.PipelineControl;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -41,10 +42,12 @@ public class OutboxRelay {
     private final ObjectMapper json;
     private final String topic;
     private final int batchSize;
+    private final PipelineControl pipeline;
 
     public OutboxRelay(JdbcTemplate jdbc, TransactionTemplate transaction, KafkaTemplate<String, String> kafka,
             ObjectMapper json, @Value("${caseroute.kafka.saved-topic}") String topic,
-            @Value("${caseroute.outbox.batch-size}") int batchSize) {
+            @Value("${caseroute.outbox.batch-size}") int batchSize, PipelineControl pipeline) {
+        this.pipeline = pipeline;
         this.jdbc = jdbc;
         this.transaction = transaction;
         this.kafka = kafka;
@@ -56,6 +59,7 @@ public class OutboxRelay {
     /** Drains full batches back to back for up to 2 seconds, then yields until the next tick. */
     @Scheduled(fixedDelayString = "${caseroute.outbox.poll-interval-ms}")
     public void relay() {
+        if (pipeline.isPaused()) return; // rows wait in the outbox until the pipeline is resumed
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         try {
             int sent;

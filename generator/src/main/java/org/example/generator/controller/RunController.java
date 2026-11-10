@@ -28,6 +28,19 @@ public class RunController {
 
     public RunController(RunService runs, RunChecker checker) { this.runs = runs; this.checker = checker; }
 
+    /**
+     * Resends the run's blocked submissions (turned away by load shedding), after the run, at the run's rate.
+     * Progress appears in the snapshot's {@code resend} field and the live event stream.
+     */
+    @PostMapping("/{id}/resend-blocked")
+    public RunSnapshot resendBlocked(@PathVariable UUID id) {
+        LoadRun run = runs.find(id);
+        if (!run.startResend())
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,
+                    "Nothing to resend: the run must be finished, not already resending, and have blocked submissions");
+        return run.snapshot();
+    }
+
     /** Reconciles a finished run against the cases the backend saved. Can be repeated as processing drains. */
     @PostMapping("/{id}/check")
     public CheckReport check(@PathVariable UUID id) { return checker.check(runs.find(id)); }
@@ -78,7 +91,7 @@ public class RunController {
                 while (!closed.get()) {
                     RunSnapshot snapshot = run.snapshot();
                     emitter.send(SseEmitter.event().name("progress").data(snapshot));
-                    if (snapshot.finishedAt() != null) break;
+                    if (snapshot.finishedAt() != null && !"RESENDING".equals(snapshot.state())) break;
                     Thread.sleep(500);
                 }
                 emitter.complete();

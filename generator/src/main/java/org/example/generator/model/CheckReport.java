@@ -15,11 +15,12 @@ import java.util.UUID;
  * @param accepted          submissions the client received an accepted reply for
  * @param unknown           submissions whose final outcome the client never learned
  * @param rejectedButSaved  told "rejected" (4xx or mismatched reply), yet a case exists. Should be 0.
+ * @param blocked           turned away by load shedding: total, and how many have a case anyway (should be 0)
  * @param unexpected        cases for this run that were never sent, or that the generator never planned. Should be 0.
  * @param examples          up to 10 client request IDs per problem category, for looking up individually
  */
 public record CheckReport(UUID runId, Instant checkedAt, String verdict, String summary, long casesInDatabase,
-        Accepted accepted, Unknown unknown, long rejectedButSaved, long unexpected,
+        Accepted accepted, Unknown unknown, long rejectedButSaved, Blocked blocked, long unexpected,
         Map<String, List<UUID>> examples) {
 
     /**
@@ -34,4 +35,7 @@ public record CheckReport(UUID runId, Instant checkedAt, String verdict, String 
      * @param notSaved never received; only a retry would have recovered it
      */
     public record Unknown(long total, long saved, long notSaved) { }
+
+    /** Blocked by load shedding: definitely not stored, so {@code saved} should always be 0. */
+    public record Blocked(long total, long saved) { }
 }

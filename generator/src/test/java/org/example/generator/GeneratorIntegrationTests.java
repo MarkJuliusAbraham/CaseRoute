@@ -41,6 +41,9 @@ class GeneratorIntegrationTests {
     /** Request IDs the fake ledger leaves out, as if the case was lost after acceptance. */
     private static final java.util.Set<String> lost = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final AtomicInteger warmups = new AtomicInteger();
+    /** When set, the target sheds load: 503 + Retry-After, nothing stored. */
+    private static final java.util.concurrent.atomic.AtomicBoolean shedding = new java.util.concurrent.atomic.AtomicBoolean();
+    private static final java.util.Map<String, Integer> paths = new java.util.concurrent.ConcurrentHashMap<>();
     private static final HttpServer TARGET = startTarget();
     @LocalServerPort int port;
     @Autowired RunService runs;
@@ -53,10 +56,17 @@ class GeneratorIntegrationTests {
             server.createContext("/api/cases", exchange -> {
                 try {
                     Thread.sleep(delay.get());
+                    paths.merge(exchange.getRequestURI().getPath(), 1, Integer::sum);
                     if (exchange.getRequestURI().getPath().endsWith("/warmup")) {
                         exchange.getRequestBody().readAllBytes();
                         warmups.incrementAndGet(); // stores nothing
                         exchange.sendResponseHeaders(204, -1);
+                        return;
+                    }
+                    if (shedding.get()) {
+                        exchange.getRequestBody().readAllBytes();
+                        exchange.getResponseHeaders().set("Retry-After", "1");
+                        exchange.sendResponseHeaders(503, -1);
                         return;
                     }
                     var input = JSON.readTree(exchange.getRequestBody().readAllBytes());
@@ -110,7 +120,7 @@ class GeneratorIntegrationTests {
     @AfterEach void drain() throws Exception {
         LoadRun run = runs.current();
         if (run != null) { run.stop(); await(() -> !run.active()); }
-        delay.set(0); responseStatus.set(-1); failFirstAttempts.set(0); lost.clear(); received.clear(); warmups.set(0);
+        delay.set(0); responseStatus.set(-1); failFirstAttempts.set(0); lost.clear(); received.clear(); warmups.set(0); paths.clear(); shedding.set(false);
     }
 
     @Test void publicControlsStartStreamStopAndDownloadManifest() throws Exception {
@@ -138,13 +148,17 @@ class GeneratorIntegrationTests {
                 HttpResponse.BodyHandlers.ofString());
         assertEquals(200, report.statusCode());
         var records = report.body().lines().map(JSON::readTree).toList();
-        assertEquals(600, records.stream().filter(n -> n.path("type").asText().equals("planned")).count());
+        var plan = records.stream().filter(n -> n.path("type").asText().equals("plan")).findFirst().orElseThrow();
+        assertEquals(600, plan.path("planned").asLong());
+        assertEquals(0, records.stream().filter(n -> n.path("type").asText().equals("planned")).count(),
+                "no line per planned submission");
         // Only non-accepted outcomes get a result line; accepted ones are counted in per-second lines.
         assertEquals(snapshot.failed() + snapshot.unknown() + snapshot.skipped(),
                 records.stream().filter(n -> n.path("type").asText().equals("result")).count());
         assertEquals(snapshot.accepted(), records.stream().filter(n -> n.path("type").asText().equals("second"))
                 .mapToLong(n -> n.path("accepted").asLong()).sum());
-        assertEquals(snapshot.notSent(), records.stream().filter(n -> n.path("type").asText().equals("notSent")).count());
+        assertEquals(snapshot.notSent(), records.stream().filter(n -> n.path("type").asText().equals("notSent"))
+                .mapToLong(n -> n.path("count").asLong()).sum());
         assertTrue(records.stream().anyMatch(n -> n.path("type").asText().equals("summary")));
     }
 
@@ -182,6 +196,8 @@ class GeneratorIntegrationTests {
         var response = post("/api/runs", "{\"requestsPerMinute\":60,\"durationMinutes\":1,\"maxInFlight\":1}");
         assertEquals(201, response.statusCode());
         assertEquals("KAFKA", JSON.readTree(response.body()).path("settings").path("submissionMode").asText());
+        assertEquals("JETTY", JSON.readTree(response.body()).path("settings").path("httpClient").asText(),
+                "Jetty is the default HTTP client");
         LoadRun run = runs.find(UUID.fromString(JSON.readTree(response.body()).path("runId").asText()));
         await(() -> run.snapshot().accepted() == 1);
         assertEquals(202, run.snapshot().recentResults().getFirst().httpStatus());
@@ -207,13 +223,14 @@ class GeneratorIntegrationTests {
         var secondsLines = cleanRecords.stream().filter(n -> n.path("type").asText().equals("second")).toList();
         assertEquals(clean.snapshot().accepted(), secondsLines.stream().mapToLong(n -> n.path("accepted").asLong()).sum());
         assertTrue(secondsLines.getFirst().path("latencyMs").has("p99"));
-        assertEquals(clean.snapshot().notSent(), cleanRecords.stream().filter(n -> n.path("type").asText().equals("notSent")).count());
+        assertEquals(clean.snapshot().notSent(), cleanRecords.stream().filter(n -> n.path("type").asText().equals("notSent"))
+                .mapToLong(n -> n.path("count").asLong()).sum());
         assertEquals("summary", cleanRecords.getLast().path("type").asText());
     }
 
     @Test void invalidRunSettingsAreRejectedAndUiIsNotServed() throws Exception {
         assertEquals(400, post("/api/runs", "{\"requestsPerMinute\":0,\"durationMinutes\":1,\"maxInFlight\":2}").statusCode());
-        assertEquals(400, post("/api/runs", "{\"requestsPerMinute\":60000,\"durationMinutes\":60,\"maxInFlight\":2}").statusCode());
+        assertEquals(400, post("/api/runs", "{\"requestsPerMinute\":60,\"durationMinutes\":61,\"maxInFlight\":2}").statusCode());
         var page = http.send(HttpRequest.newBuilder(url("/")).GET().build(), HttpResponse.BodyHandlers.ofString());
         assertEquals(404, page.statusCode());
     }
@@ -333,10 +350,149 @@ class GeneratorIntegrationTests {
         assertEquals(s.planned(), s.accepted() + s.notSent());
     }
 
+    @Test void unknownOutcomesRecordTheExceptionChainWithMessages() {
+        var refused = new java.net.ConnectException("Connection refused");
+        var wrapped = new java.net.ConnectException();
+        wrapped.initCause(new java.nio.channels.ClosedChannelException());
+        assertEquals("ConnectException: Connection refused", org.example.generator.client.CaseClient.describe(refused));
+        assertEquals("ConnectException <- ClosedChannelException", org.example.generator.client.CaseClient.describe(wrapped));
+    }
+
+    @Test void connectionTestSendsEverythingIncludingWarmUpToTheNoOpEndpointAndCannotBeChecked() throws Exception {
+        var settings = new RunSettings(600, 1, null, org.example.generator.model.SubmissionMode.NOOP, false, 1);
+        LoadRun run = runs.start(settings);
+        await(() -> run.snapshot().accepted() >= 2);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        assertEquals(0, s.unknown()); assertEquals(0, s.failed());
+        assertEquals(s.warmupPlanned(), s.warmupSent());
+        assertEquals(0, s.warmupFailed(), "noop warm-ups expect 202");
+        assertEquals(java.util.Set.of("/api/cases/noop"), paths.keySet(), "nothing else was called: " + paths);
+        assertEquals(409, post("/api/runs/" + run.id() + "/check", "").statusCode());
+    }
+
+    @Test void shedSubmissionsAreBlockedNotRetriedAndCanBeResentAfterTheRun() throws Exception {
+        shedding.set(true);
+        // Retries are on, yet blocked submissions must not be retried automatically.
+        LoadRun run = runs.start(new RunSettings(600, 1, null, org.example.generator.model.SubmissionMode.KAFKA, true, 0));
+        await(() -> run.snapshot().blocked() >= 3);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        long blocked = s.blocked();
+        assertEquals(0, s.unknown()); assertEquals(0, s.retryRequests(), "blocked is never retried automatically");
+        assertEquals("BLOCKED", s.recentResults().getFirst().outcome());
+        assertTrue(received.isEmpty(), "nothing was stored");
+
+        var check = JSON.readTree(post("/api/runs/" + run.id() + "/check", "").body());
+        assertEquals(blocked, check.path("blocked").path("total").asLong());
+        assertEquals(0, check.path("blocked").path("saved").asLong());
+
+        shedding.set(false);
+        assertEquals(200, post("/api/runs/" + run.id() + "/resend-blocked", "").statusCode());
+        await(() -> run.snapshot().resend() != null && run.snapshot().resend().finishedAt() != null);
+        var after = run.snapshot();
+        assertEquals(0, after.blocked());
+        assertEquals(s.accepted() + blocked, after.accepted(), "every blocked submission was accepted on resend");
+        assertEquals(blocked, after.resend().accepted());
+        assertEquals("STOPPED", after.state(), "the run's own state is restored after the pass");
+        assertEquals(blocked, received.size(), "each resent once, with its original clientRequestId");
+        assertTrue(Files.exists(reports.resolve(run.id() + ".resend-1.json")));
+        assertEquals(409, post("/api/runs/" + run.id() + "/resend-blocked", "").statusCode(), "nothing left to resend");
+    }
+
+    @Test void jettyClientRunsWarmUpAndSubmissionsWithTheSameOutcomes() throws Exception {
+        var settings = new RunSettings(600, 1, null, org.example.generator.model.SubmissionMode.KAFKA, false, 1,
+                org.example.generator.model.HttpClientKind.JETTY);
+        LoadRun run = runs.start(settings);
+        await(() -> run.snapshot().accepted() >= 3);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        assertEquals(org.example.generator.model.HttpClientKind.JETTY, s.settings().httpClient());
+        assertEquals(0, s.unknown()); assertEquals(0, s.failed());
+        assertEquals(s.warmupPlanned(), s.warmupSent()); assertEquals(0, s.warmupFailed());
+        assertEquals(s.accepted(), received.size(), "every accepted submission reached the target once");
+        assertEquals(202, s.recentResults().getFirst().httpStatus());
+    }
+
+    @Test void jettyClientClassifiesSheddingAsBlockedAndOther503AsUnknown() throws Exception {
+        shedding.set(true);
+        LoadRun blocked = runs.start(new RunSettings(600, 1, null, org.example.generator.model.SubmissionMode.KAFKA,
+                true, 0, org.example.generator.model.HttpClientKind.JETTY));
+        await(() -> blocked.snapshot().blocked() >= 2);
+        blocked.stop(); await(() -> !blocked.active());
+        assertEquals(0, blocked.snapshot().unknown());
+        assertEquals(0, blocked.snapshot().retryRequests(), "blocked is never retried");
+
+        shedding.set(false); responseStatus.set(503); // a 503 without Retry-After: outcome unknown
+        LoadRun unknown = runs.start(new RunSettings(600, 1, null, org.example.generator.model.SubmissionMode.KAFKA,
+                false, 0, org.example.generator.model.HttpClientKind.JETTY));
+        await(() -> unknown.snapshot().unknown() >= 2);
+        unknown.stop(); await(() -> !unknown.active());
+        assertEquals(0, unknown.snapshot().blocked());
+    }
+
+    @Test void builtInJavaClientStillWorksWhenChosen() throws Exception {
+        LoadRun run = runs.start(new RunSettings(600, 1, null, org.example.generator.model.SubmissionMode.KAFKA, false, 1,
+                org.example.generator.model.HttpClientKind.JDK));
+        await(() -> run.snapshot().accepted() >= 3);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        assertEquals(org.example.generator.model.HttpClientKind.JDK, s.settings().httpClient());
+        assertEquals(0, s.unknown()); assertEquals(0, s.warmupFailed());
+    }
+
     @Test void checkingAnActiveRunIsRefused() throws Exception {
         delay.set(200);
         LoadRun run = runs.start(new RunSettings(600, 1, null));
         assertEquals(409, post("/api/runs/" + run.id() + "/check", "").statusCode());
+    }
+
+    @Test void endlessRunKeepsSendingPastItsDurationUntilStopped() throws Exception {
+        var response = post("/api/runs", "{\"requestsPerMinute\":6000,\"durationMinutes\":1,\"endless\":true}");
+        assertEquals(201, response.statusCode());
+        LoadRun run = runs.find(UUID.fromString(JSON.readTree(response.body()).path("runId").asText()));
+        assertTrue(run.snapshot().settings().endless());
+        await(() -> run.snapshot().accepted() >= 20);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        assertEquals("STOPPED", s.state());
+        assertEquals(0, s.notSent(), "an endless run has no end to fall short of");
+        assertEquals(s.planned(), s.accepted() + s.failed() + s.unknown() + s.skipped() + s.blocked());
+        var records = Files.readAllLines(run.report().path()).stream().map(JSON::readTree).toList();
+        assertTrue(records.stream().filter(n -> n.path("type").asText().equals("plan")).findFirst().orElseThrow()
+                .path("planned").isNull());
+        // Every id the target received is the run id plus a sequence number in 1..planned.
+        for (String id : received.keySet()) {
+            long sequence = org.example.generator.model.Submission.sequenceOf(run.id(), UUID.fromString(id));
+            assertTrue(sequence >= 1 && sequence <= s.planned(), id);
+        }
+        var check = JSON.readTree(post("/api/runs/" + run.id() + "/check", "").body());
+        assertEquals("CONSISTENT", check.path("verdict").asText());
+        assertEquals(s.accepted(), check.path("accepted").path("processed").asLong());
+    }
+
+    @Test void submissionIdsAreDerivedFromTheRunAndSequenceNumber() {
+        UUID run = UUID.randomUUID();
+        var first = org.example.generator.model.Submission.forRun(run, 1);
+        assertEquals(first, org.example.generator.model.Submission.forRun(run, 1), "rebuilt identically");
+        assertNotEquals(first.clientRequestId(), org.example.generator.model.Submission.forRun(run, 2).clientRequestId());
+        assertEquals(42, org.example.generator.model.Submission.sequenceOf(run,
+                org.example.generator.model.Submission.forRun(run, 42).clientRequestId()));
+        assertEquals(-1, org.example.generator.model.Submission.sequenceOf(run, UUID.randomUUID()));
+        assertEquals(-1, org.example.generator.model.Submission.sequenceOf(run,
+                org.example.generator.model.Submission.forRun(run, -3).clientRequestId()), "warm-up ids are not run ids");
+    }
+
+    @Test void jettyRunCountsConnectionsAndReusesThemInsteadOfOpeningNewOnes() throws Exception {
+        var settings = new RunSettings(6000, 1, null, org.example.generator.model.SubmissionMode.KAFKA, false, 0,
+                org.example.generator.model.HttpClientKind.JETTY);
+        LoadRun run = runs.start(settings);
+        await(() -> run.snapshot().accepted() >= 50);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        assertTrue(s.connectionsOpen() >= 1, "connections are counted");
+        assertTrue(s.connectionsOpened() < s.accepted() / 5,
+                "connections are reused: " + s.connectionsOpened() + " opened for " + s.accepted() + " accepted");
     }
 
     private URI url(String path) { return URI.create("http://localhost:" + port + path); }

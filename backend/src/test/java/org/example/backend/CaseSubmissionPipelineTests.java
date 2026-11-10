@@ -35,6 +35,9 @@ class CaseSubmissionPipelineTests {
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired org.example.backend.config.CaseStatusConstraint statusConstraint;
     @Autowired org.example.backend.controller.CaseController controller;
+    @Autowired org.example.backend.service.PipelineControl pipeline;
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("intakeKafkaTemplate")
+    KafkaTemplate<String, String> intakeKafka;
 
     @Test
     void processingResultsFromKafkaAreRecordedOnceAndUnreadableOnesDoNotBlock() throws Exception {
@@ -189,6 +192,34 @@ class CaseSubmissionPipelineTests {
         Thread.sleep(2000); // long enough for the submission consumer to have saved it, had it been a real one
         assertTrue(repository.findByClientRequestId(clientRequestId).isEmpty());
         assertEquals(0, stats.stats(runId).saved());
+    }
+
+    @Test
+    void customerSubmissionsUseTheirOwnProducerSeparateFromTheRelay() {
+        cases.submitCase(new CreateCaseRequest(UUID.randomUUID(), UUID.randomUUID(), "Own producer", "Intake."));
+        org.junit.jupiter.api.Assertions.assertNotSame(kafka.getProducerFactory(), intakeKafka.getProducerFactory(),
+                "intake and the outbox relay must not share a producer");
+        java.util.function.Function<KafkaTemplate<String, String>, java.util.Set<String>> clientIds = template ->
+                template.metrics().keySet().stream().map(name -> name.tags().get("client-id"))
+                        .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        assertTrue(clientIds.apply(intakeKafka).stream().allMatch(id -> id.startsWith("backend-intake")),
+                "submissions went through the intake producer: " + clientIds.apply(intakeKafka));
+        assertTrue(clientIds.apply(kafka).stream().noneMatch(id -> id.startsWith("backend-intake")));
+    }
+
+    @Test
+    void pausedPipelineHoldsSubmissionsInKafkaAndCatchesUpOnResume() throws Exception {
+        UUID runId = UUID.randomUUID();
+        pipeline.setPaused(true);
+        try {
+            cases.submitCase(new CreateCaseRequest(UUID.randomUUID(), runId, "Paused", "Waits in Kafka."));
+            Thread.sleep(3000); // ample time for the case writer to have saved it, were it running
+            assertEquals(0, stats.stats(runId).saved(), "nothing is saved while paused");
+        } finally {
+            pipeline.setPaused(false);
+        }
+        await(() -> stats.stats(runId).saved() == 1);
+        await(() -> stats.stats(runId).awaitingRelay() == 0);
     }
 
     private static void await(BooleanSupplier condition) throws InterruptedException {

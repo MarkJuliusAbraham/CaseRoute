@@ -47,62 +47,67 @@ public class RunChecker {
     }
 
     public CheckReport check(LoadRun run) {
-        if (run.active()) throw new ResponseStatusException(HttpStatus.CONFLICT, "Check the run after it finishes");
-        var submissions = run.submissions();
-        byte[] told = run.outcomes();
-        Map<UUID, Integer> index = HashMap.newHashMap(submissions.size());
-        for (int i = 0; i < submissions.size(); i++) index.put(submissions.get(i).clientRequestId(), i);
-
-        byte[] saved = new byte[submissions.size()];
-        long inDatabase = 0, unexpected = 0;
+        if (run.active() || run.resending())
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Check the run after it finishes");
+        if (run.snapshot().settings().submissionMode() == org.example.generator.model.SubmissionMode.NOOP)
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Connection tests store nothing, so there is nothing to check");
+        // Memory: the run lists only non-accepted outcomes, and saved accepted submissions are marked in a bit set
+        // (1 bit per submission), so a check of a long run needs no per-submission objects.
+        UUID runId = run.id();
+        LoadRun.Outcomes told = run.outcomes();
+        long acceptedTotal = told.handled() - told.problems().size();
+        java.util.BitSet acceptedSaved = new java.util.BitSet();
+        long inDatabase = 0, unexpected = 0, processed = 0, awaiting = 0;
+        long unknownSaved = 0, rejectedButSaved = 0, blockedButSaved = 0;
+        java.util.Set<Long> problemsSaved = new java.util.HashSet<>();
+        var examples = new LinkedHashMap<String, List<UUID>>();
         List<UUID> unexpectedExamples = new ArrayList<>();
-        try (Stream<String> lines = fetchLedger(run.id())) {
+        try (Stream<String> lines = fetchLedger(runId)) {
             for (Iterator<String> it = lines.iterator(); it.hasNext(); ) {
                 String line = it.next();
                 int comma = line.indexOf(',');
                 if (comma < 0) continue;
                 inDatabase++;
                 UUID id = UUID.fromString(line.substring(0, comma));
-                Integer i = index.get(id);
-                if (i == null) { unexpected++; addExample(unexpectedExamples, id); continue; }
-                saved[i] = "OPEN".equals(line.substring(comma + 1)) ? OPEN : PROCESSED;
+                long sequence = org.example.generator.model.Submission.sequenceOf(runId, id);
+                boolean isProcessed = !"OPEN".equals(line.substring(comma + 1));
+                switch (sequence < 0 ? LoadRun.NOT_SENT : told.of(sequence)) {
+                    case LoadRun.ACCEPTED -> {
+                        acceptedSaved.set((int) sequence);
+                        if (isProcessed) processed++; else awaiting++;
+                    }
+                    case LoadRun.UNKNOWN -> { unknownSaved++; problemsSaved.add(sequence); }
+                    case LoadRun.BLOCKED -> { blockedButSaved++; problemsSaved.add(sequence); example(examples, "blockedButSaved", id); }
+                    case LoadRun.FAILED -> { rejectedButSaved++; problemsSaved.add(sequence); example(examples, "rejectedButSaved", id); }
+                    default -> { unexpected++; addExample(unexpectedExamples, id); } // skipped, never sent, or not ours
+                }
             }
         }
-
-        long acceptedTotal = 0, processed = 0, awaiting = 0, missing = 0;
-        long unknownTotal = 0, unknownSaved = 0, rejectedButSaved = 0;
-        var examples = new LinkedHashMap<String, List<UUID>>();
-        for (int i = 0; i < told.length; i++) {
-            UUID id = submissions.get(i).clientRequestId();
-            switch (told[i]) {
-                case LoadRun.ACCEPTED -> {
-                    acceptedTotal++;
-                    if (saved[i] == PROCESSED) processed++;
-                    else if (saved[i] == OPEN) awaiting++;
-                    else { missing++; example(examples, "acceptedButMissing", id); }
-                }
-                case LoadRun.UNKNOWN -> {
-                    unknownTotal++;
-                    if (saved[i] != NONE) unknownSaved++;
-                    else example(examples, "unknownNotSaved", id);
-                }
-                case LoadRun.FAILED -> {
-                    if (saved[i] != NONE) { rejectedButSaved++; example(examples, "rejectedButSaved", id); }
-                }
-                default -> { // skipped or never sent: nothing should exist
-                    if (saved[i] != NONE) { unexpected++; example(examples, "unexpected", id); }
-                }
-            }
+        long missing = acceptedTotal - processed - awaiting;
+        // Examples of accepted-but-missing: the first accepted sequence numbers with no saved case.
+        for (long sequence = 1; sequence <= told.handled() && missing > 0
+                && examples.getOrDefault("acceptedButMissing", List.of()).size() < EXAMPLES; sequence++) {
+            if (told.of(sequence) == LoadRun.ACCEPTED && !acceptedSaved.get((int) sequence))
+                example(examples, "acceptedButMissing", org.example.generator.model.Submission.idFor(runId, sequence));
+        }
+        long unknownTotal = 0, blockedTotal = 0;
+        for (var entry : new java.util.TreeMap<>(told.problems()).entrySet()) {
+            if (entry.getValue() == LoadRun.UNKNOWN) {
+                unknownTotal++;
+                if (!problemsSaved.contains(entry.getKey()))
+                    example(examples, "unknownNotSaved", org.example.generator.model.Submission.idFor(runId, entry.getKey()));
+            } else if (entry.getValue() == LoadRun.BLOCKED) blockedTotal++;
         }
         for (UUID id : unexpectedExamples) example(examples, "unexpected", id);
 
-        String verdict = missing > 0 || rejectedButSaved > 0 || unexpected > 0 ? "DISCREPANCIES"
+        String verdict = missing > 0 || rejectedButSaved > 0 || blockedButSaved > 0 || unexpected > 0 ? "DISCREPANCIES"
                 : awaiting > 0 ? "PENDING" : "CONSISTENT";
         var report = new CheckReport(run.id(), Instant.now(), verdict,
                 summary(verdict, acceptedTotal, processed, awaiting, missing, unknownTotal, unknownSaved),
                 inDatabase, new CheckReport.Accepted(acceptedTotal, processed, awaiting, missing),
                 new CheckReport.Unknown(unknownTotal, unknownSaved, unknownTotal - unknownSaved),
-                rejectedButSaved, unexpected, examples);
+                rejectedButSaved, new CheckReport.Blocked(blockedTotal, blockedButSaved), unexpected, examples);
         latest.put(run.id(), report);
         save(report);
         return report;

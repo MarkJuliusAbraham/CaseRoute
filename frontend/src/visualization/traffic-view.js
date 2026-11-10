@@ -73,6 +73,23 @@ export class TrafficView {
             this.publishedTracker.reset();
         };
         document.addEventListener('visibilitychange', this.onVisibility);
+        // Clicking a node (Simple view only) opens its settings; see setNodeClick.
+        this.onNodeClick = null;
+        this.hovered = null;
+        this.onPointerMove = event => {
+            const name = this.onNodeClick ? this.nodeAtEvent(event) : null;
+            this.hovered = name;
+            this.canvas.style.cursor = name ? 'pointer' : '';
+            this.canvas.title = name ? `${NODE_LABELS[name]} settings` : '';
+        };
+        this.onPointerLeave = () => { this.hovered = null; this.canvas.style.cursor = ''; };
+        this.onCanvasClick = event => {
+            const name = this.onNodeClick ? this.nodeAtEvent(event) : null;
+            if (name) this.onNodeClick(name);
+        };
+        this.canvas.addEventListener('pointermove', this.onPointerMove);
+        this.canvas.addEventListener('pointerleave', this.onPointerLeave);
+        this.canvas.addEventListener('click', this.onCanvasClick);
         this.resizeObserver = new ResizeObserver(() => this.resize());
         this.resizeObserver.observe(this.canvas);
         this.tick = this.tick.bind(this);
@@ -82,9 +99,32 @@ export class TrafficView {
 
     // The mode of the run being shown; before any run, the toggle's selection.
     get mode() { return this.model.snapshot?.settings?.submissionMode ?? this.selectedMode; }
-    get kafka() { return this.mode !== 'DIRECT'; }
+    get kafka() { return this.mode === 'KAFKA'; }
+    // Connection test: the backend replies instantly and nothing flows past it.
+    get noop() { return this.mode === 'NOOP'; }
 
     setMode(mode) { this.selectedMode = mode; }
+
+    /** Makes the nodes clickable (callback receives 'generator', 'backend', 'kafka', 'database' or 'processor'), or not (null). */
+    setNodeClick(callback) {
+        this.onNodeClick = callback;
+        if (!callback) this.onPointerLeave();
+    }
+
+    nodeAtEvent(event) {
+        const bounds = this.canvas.getBoundingClientRect();
+        return nodeAt(this.layout().nodes, event.clientX - bounds.left, event.clientY - bounds.top);
+    }
+
+    // The HTTP client of the run being shown; before any run, the generator card's selection.
+    get httpClient() { return this.model.snapshot?.settings?.httpClient ?? this.selectedHttpClient ?? 'JETTY'; }
+    setHttpClient(kind) { this.selectedHttpClient = kind; }
+
+    // The request edge names the client that sends the traffic.
+    labelOf(edge) {
+        if (edge.id !== 'request') return edge.label;
+        return `${edge.label} · ${this.httpClient === 'JETTY' ? 'Jetty' : 'Java client'}`;
+    }
 
     update(snapshot) {
         const now = performance.now();
@@ -100,7 +140,7 @@ export class TrafficView {
         this.emit('request', pulse.count, now);
         const replies = this.acceptedTracker.update(snapshot.accepted, now);
         // Kafka mode: an accepted reply means "written to cases.submitted". Direct mode: "saved".
-        this.emit(this.kafka ? 'toKafka' : 'bypass', replies, now);
+        if (!this.noop) this.emit(this.kafka ? 'toKafka' : 'bypass', replies, now);
     }
 
     get saved() { return this.stats?.saved ?? null; }
@@ -184,7 +224,7 @@ export class TrafficView {
         const meter = q('[data-capacity]');
         meter.hidden = !!snapshot && snapshot.settings.maxInFlight == null;
         meter.value = snapshot?.settings.maxInFlight ? snapshot.inFlight / snapshot.settings.maxInFlight : 0;
-        const path = this.kafka ? 'Intake through Kafka' : 'Intake direct to PostgreSQL';
+        const path = this.noop ? 'Connection test · instant replies, nothing stored' : this.kafka ? 'Intake through Kafka' : 'Intake direct to PostgreSQL';
         q('[data-traffic-status]').textContent = `${path} · ` + (!snapshot ? 'Waiting for a run' : finished ? (this.stats && (this.stats.open > 0 || this.stats.awaitingRelay > 0) ? 'Run finished · processing continues' : 'Run finished') : !this.model.fresh(now) ? 'Waiting for live telemetry' : this.reduced.matches ? 'Live · reduced motion' : 'Live telemetry');
         q('[data-chart-note]').textContent = this.reduced.matches ? 'Reduced motion is enabled. The graph counts still update.' : 'Animation only: moving dashes show direction (faster while traffic flows); dots show observed count increases, not measured travel time. Green is intake, blue is processing.';
     }
@@ -198,7 +238,7 @@ export class TrafficView {
             const [nw, nh] = name === 'kafka' ? spec.kafkaSize : spec.size;
             const cx = Math.min(w - nw / 2 - 8, Math.max(nw / 2 + 8, fx * w));
             const cy = Math.min(h - nh / 2 - 8, Math.max(nh / 2 + 18, fy * h));
-            nodes[name] = { cx, cy, x: cx - nw / 2, y: cy - nh / 2, w: nw, h: nh };
+            nodes[name] = { name, cx, cy, x: cx - nw / 2, y: cy - nh / 2, w: nw, h: nh };
         }
         const edges = {};
         for (const base of EDGES) {
@@ -310,7 +350,9 @@ export class TrafficView {
         const t = edge.labelAt;
         const mid = quadratic(edge.start, edge.control, edge.end, t);
         ctx.font = '11px "Segoe UI", sans-serif';
-        const width = ctx.measureText(edge.label).width + 12, height = 18;
+        const label = this.labelOf(edge);
+        const jetty = edge.id === 'request' && this.httpClient === 'JETTY';
+        const width = ctx.measureText(label).width + 12, height = 18;
         // The label moves along the curve's normal at t, to the outside of the bend (above for straight edges),
         // far enough for the whole pill to clear the line.
         const tx = 2 * (1 - t) * (edge.control.x - edge.start.x) + 2 * t * (edge.end.x - edge.control.x);
@@ -324,17 +366,18 @@ export class TrafficView {
         // Keep the whole pill inside the canvas.
         mid.x = Math.min(this.width - width / 2 - 2, Math.max(width / 2 + 2, mid.x));
         ctx.globalAlpha = active ? 1 : .55;
-        ctx.fillStyle = '#ffffff'; ctx.strokeStyle = active ? '#d7e2dd' : '#e4e9e6'; ctx.lineWidth = 1;
+        ctx.fillStyle = jetty ? '#e6f2ec' : '#ffffff'; ctx.strokeStyle = jetty ? colors.intake : active ? '#d7e2dd' : '#e4e9e6'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.roundRect(mid.x - width / 2, mid.y - height / 2, width, height, 9); ctx.fill(); ctx.stroke();
-        ctx.fillStyle = edge.kind === 'processing' ? colors.processing : colors.muted;
+        ctx.fillStyle = jetty ? colors.intake : edge.kind === 'processing' ? colors.processing : colors.muted;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(edge.label, mid.x, mid.y + .5);
+        ctx.fillText(label, mid.x, mid.y + .5);
         ctx.textBaseline = 'alphabetic'; ctx.globalAlpha = 1;
     }
 
     card(node, tone) {
         const ctx = this.ctx;
-        ctx.fillStyle = tone.surface; ctx.strokeStyle = tone.accent; ctx.lineWidth = 1.5;
+        ctx.fillStyle = tone.surface; ctx.strokeStyle = tone.accent;
+        ctx.lineWidth = this.onNodeClick && this.hovered === node.name ? 3 : 1.5; // hovered and clickable
         ctx.beginPath(); ctx.roundRect(node.x, node.y, node.w, node.h, 12); ctx.fill(); ctx.stroke();
         // Status sits above the box's right edge, clear of edges arriving at the box's centre.
         if (tone.label) {
@@ -378,9 +421,22 @@ export class TrafficView {
 
     destroy() {
         cancelAnimationFrame(this.frame);
+        this.canvas.removeEventListener('pointermove', this.onPointerMove);
+        this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
+        this.canvas.removeEventListener('click', this.onCanvasClick);
         this.resizeObserver.disconnect();
         document.removeEventListener('visibilitychange', this.onVisibility);
     }
+}
+
+const NODE_LABELS = { generator: 'Generator', backend: 'Backend', kafka: 'Kafka', database: 'PostgreSQL', processor: 'Processor' };
+
+/** The node whose box contains (x, y), with a few pixels of slack, or null. */
+export function nodeAt(nodes, x, y) {
+    for (const node of Object.values(nodes)) {
+        if (x >= node.x - 4 && x <= node.x + node.w + 4 && y >= node.y - 4 && y <= node.y + node.h + 4) return node.name;
+    }
+    return null;
 }
 
 function healthTone(live) {

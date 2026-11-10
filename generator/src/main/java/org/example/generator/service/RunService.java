@@ -4,7 +4,6 @@ import jakarta.annotation.PreDestroy;
 import org.example.generator.client.CaseClient;
 import org.example.generator.client.RetryPolicy;
 import org.example.generator.model.RunSettings;
-import org.example.generator.model.Submission;
 import org.example.generator.report.RunReport;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -14,7 +13,6 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.UUID;
 
 @Service
@@ -35,15 +33,12 @@ public class RunService {
     }
 
     public synchronized LoadRun start(RunSettings settings) throws IOException {
-        if (current != null && current.active())
+        if (current != null && (current.active() || current.resending()))
             throw new ResponseStatusException(HttpStatus.CONFLICT, "A run is already active");
-        if (settings.planned() > 1_000_000)
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Limit each run to 1,000,000 submissions");
         UUID id = UUID.randomUUID();
-        var submissions = new ArrayList<Submission>();
-        for (long i = 1; i <= settings.planned(); i++) submissions.add(Submission.forRun(id, i));
-        var report = new RunReport(directory, id, settings, submissions, json);
-        current = new LoadRun(id, settings, submissions, client, retry, report);
+        // Nothing is planned up front: submissions are built from their sequence number as they are sent.
+        var report = new RunReport(directory, id, settings, json);
+        current = new LoadRun(id, settings, client, retry, report);
         runner = Thread.ofVirtual().name("load-run-" + id).start(current);
         return current;
     }

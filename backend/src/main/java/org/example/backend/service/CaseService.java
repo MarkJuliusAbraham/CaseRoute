@@ -10,6 +10,7 @@ import org.example.backend.model.entity.OutboxEvent;
 import org.example.backend.model.entity.ServiceCase;
 import org.example.backend.repository.CaseRepository;
 import org.example.backend.repository.OutboxRepository;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
@@ -25,8 +26,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Accepts submissions on one of two write paths. The Kafka path writes to Kafka and waits for the broker's
- * confirmation; {@link org.example.backend.messaging.CaseSubmissionConsumer} saves the case later.
+ * Accepts submissions on one of two write paths. The Kafka path writes to Kafka through the dedicated intake
+ * producer (see {@code KafkaConfig#intakeKafkaTemplate}) and waits for the broker's confirmation; {@link org.example.backend.messaging.CaseSubmissionConsumer} saves the case later.
  * The direct path saves to Postgres before replying.
  */
 @Service
@@ -40,7 +41,8 @@ public class CaseService {
     private final String warmupTopic;
     private final Duration publishTimeout;
 
-    public CaseService(CaseRepository repository, OutboxRepository outbox, KafkaTemplate<String, String> kafka, ObjectMapper json,
+    public CaseService(CaseRepository repository, OutboxRepository outbox,
+            @Qualifier("intakeKafkaTemplate") KafkaTemplate<String, String> kafka, ObjectMapper json,
             @Value("${caseroute.kafka.submissions-topic}") String topic,
             @Value("${caseroute.kafka.warmup-topic}") String warmupTopic,
             @Value("${caseroute.kafka.publish-timeout}") Duration publishTimeout) {

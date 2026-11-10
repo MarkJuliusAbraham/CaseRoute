@@ -7,6 +7,7 @@ const report = {
     accepted: { total: 100, processed: 97, awaitingProcessing: 1, missing: 2 },
     unknown: { total: 5, saved: 3, notSaved: 2 },
     rejectedButSaved: 0,
+    blocked: { total: 4, saved: 0 },
     unexpected: 0,
 };
 
@@ -14,9 +15,10 @@ test('rows cover accepted, unknown and impossible outcomes in order', () => {
     const rows = checkRows(report);
     assert.deepEqual(rows.map(([label]) => label), [
         'Accepted replies', 'Saved and processed', 'Saved, awaiting processing', 'Accepted but missing',
-        'Outcome unknown', 'Unknown, saved anyway', 'Unknown, never arrived', 'Rejected but saved', 'Unexpected cases',
+        'Outcome unknown', 'Unknown, saved anyway', 'Unknown, never arrived', 'Blocked (backend busy)', 'Blocked but saved',
+        'Rejected but saved', 'Unexpected cases',
     ]);
-    assert.deepEqual(rows.map(([, value]) => value), [100, 97, 1, 2, 5, 3, 2, 0, 0]);
+    assert.deepEqual(rows.map(([, value]) => value), [100, 97, 1, 2, 5, 3, 2, 4, 0, 0, 0]);
 });
 
 test('only counts that should be zero are flagged, and only when they are not', () => {

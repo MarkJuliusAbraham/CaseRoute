@@ -11,8 +11,18 @@ import { TrafficView } from './visualization/traffic-view.js';
 import { SavedCasesPoller } from './saved-cases.js';
 import { CheckerView } from './checker.js';
 import { ViewSwitcher } from './views.js';
+import { PipelineToggle } from './pipeline-control.js';
+import { SheddingControl } from './shedding-control.js';
+import { Hints } from './hints.js';
+import { NodeSettings, LayoutSwitch } from './node-settings.js';
 
 const views = new ViewSwitcher();
+const hints = new Hints();
+if (import.meta.hot) import.meta.hot.dispose(() => hints.destroy());
+const pipelineToggle = new PipelineToggle(document.getElementById('pipeline-control'));
+if (import.meta.hot) import.meta.hot.dispose(() => pipelineToggle.destroy());
+const shedding = new SheddingControl(document.getElementById('shedding-control'));
+if (import.meta.hot) import.meta.hot.dispose(() => shedding.destroy());
 if (import.meta.hot) import.meta.hot.dispose(() => views.destroy());
 
 const traffic = new TrafficView(document.getElementById('traffic-visualization'));
@@ -23,9 +33,19 @@ const savedCases = new SavedCasesPoller((runId, stats) => traffic.setStats(runId
 if (import.meta.hot) import.meta.hot.dispose(() => savedCases.stop());
 
 const el = id => document.getElementById(id);
-const selectedMode = () => el('use-kafka').checked ? 'KAFKA' : 'DIRECT';
+// Connection test overrides the intake path: instant replies from POST /api/cases/noop, nothing stored.
+const selectedMode = () => el('connection-test').checked ? 'NOOP' : el('use-kafka').checked ? 'KAFKA' : 'DIRECT';
 el('use-kafka').addEventListener('change', () => traffic.setMode(selectedMode()));
+el('http-client').addEventListener('change', () => traffic.setHttpClient(el('http-client').value));
+traffic.setHttpClient(el('http-client').value);
+el('connection-test').addEventListener('change', () => { traffic.setMode(selectedMode()); updateCapacityInput(); });
 const caseReport = new CaseReportView(el('received-cases'));
+let layoutStorage = null;
+try { layoutStorage = window.localStorage; } catch { /* the layout choice is not remembered */ }
+const nodeSettings = new NodeSettings(el('node-settings'));
+if (import.meta.hot) import.meta.hot.dispose(() => nodeSettings.destroy());
+const layoutSwitch = new LayoutSwitch(el('service-connections'), traffic, nodeSettings, layoutStorage);
+if (import.meta.hot) import.meta.hot.dispose(() => layoutSwitch.destroy());
 if (import.meta.hot) import.meta.hot.dispose(() => caseReport.destroy());
 let historyStorage = null;
 try { historyStorage = window.localStorage; } catch { /* Memory-only fallback. */ }
@@ -64,7 +84,8 @@ function showError(message) { el('error').textContent=message; el('error').hidde
 function estimate() {
  const planned = Number(el('rate').value) * Number(el('duration').value);
  const warmup = Math.floor(Number(el('rate').value) * Number(el('warmup').value) / 120);
- el('estimate').textContent = `${planned.toLocaleString()} planned submissions` + (warmup ? ` after ${warmup.toLocaleString()} warm-up requests (not stored)` : '');
+ const main = el('endless').checked ? `${Number(el('rate').value).toLocaleString()} submissions per minute until stopped` : `${planned.toLocaleString()} planned submissions`;
+ el('estimate').textContent = main + (warmup ? ` after ${warmup.toLocaleString()} warm-up requests (not stored)` : '');
 }
 const presets = [...document.querySelectorAll('[data-rate-preset]')];
 function markPreset() { for (const b of presets) b.setAttribute('aria-pressed', String(b.dataset.ratePreset === el('rate').value)); }
@@ -77,13 +98,15 @@ for (const b of document.querySelectorAll('[data-rate-step]')) b.addEventListene
  estimate(); markPreset();
 });
 el('rate').addEventListener('input', markPreset);
-el('rate').addEventListener('input',estimate);el('duration').addEventListener('input',estimate);el('warmup').addEventListener('input',estimate);
+el('rate').addEventListener('input',estimate);el('duration').addEventListener('input',estimate);el('endless').addEventListener('change',()=>{estimate();updateCapacityInput();});el('warmup').addEventListener('input',estimate);
 function updateCapacityInput() {
  el('capacity').disabled = activeRun || starting || el('unlimited').checked;
  el('capacity').required = !el('unlimited').checked;
  el('capacity-field').hidden = el('unlimited').checked;
- el('use-kafka').disabled = activeRun || starting;
+ el('use-kafka').disabled = activeRun || starting || el('connection-test').checked;
+ el('connection-test').disabled = activeRun || starting;
  el('retry').disabled = activeRun || starting;
+ el('duration').disabled = activeRun || starting || el('endless').checked;
 }
 el('unlimited').addEventListener('change', updateCapacityInput);
 updateCapacityInput();
@@ -92,24 +115,35 @@ function render(run) {
  traffic.update(run);
  savedCases.track(run);
  checker.setRun(run);
- runKnown = true; activeRun = run.finishedAt == null; updateControls();
+ // A resend pass after the run also keeps the generator busy.
+ runKnown = true; activeRun = run.finishedAt == null || run.state === 'RESENDING'; updateControls();
  activeId=run.runId;
  caseReport.setRunId(run.runId);
  el('state').textContent=run.state;
- const mode = run.settings.submissionMode === 'DIRECT' ? 'Direct to PostgreSQL' : 'Through Kafka';
+ const mode = { DIRECT: 'Direct to PostgreSQL', NOOP: 'Connection test (nothing stored)' }[run.settings.submissionMode] ?? 'Through Kafka';
  const retries = run.settings.retryEnabled ? 'retries on' : 'retries off';
- el('run-id').textContent=`Run ${run.runId} · ${mode} · ${retries}`;
- for(const key of ['dispatched','accepted','failed','unknown','skipped','inFlight','retried','recovered'])el(key).textContent=(run[key] ?? 0).toLocaleString();
+ const httpClient = run.settings.httpClient === 'JETTY' ? 'Jetty client' : 'Java client';
+ const length = run.settings.endless ? 'until stopped' : `${run.settings.durationMinutes} min`;
+ el('run-id').textContent=`Run ${run.runId} · ${length} · ${mode} · ${retries} · ${httpClient}`;
+ for(const key of ['dispatched','accepted','failed','unknown','skipped','inFlight','retried','recovered','blocked'])el(key).textContent=(run[key] ?? 0).toLocaleString();
  const accounted=run.accepted+run.failed+run.unknown+run.skipped+run.notSent;
- el('progress').max=run.planned;el('progress').value=accounted;
+ for(const key of ['connectionsOpen','connectionsOpened','connectionsClosed'])el(key).textContent=run.settings.httpClient==='JETTY'?(run[key] ?? 0).toLocaleString():'—';
+ // An endless run has no end to measure progress against: the bar shows activity only.
+ if(run.settings.endless&&!terminal(run.state)){el('progress').removeAttribute('value');}
+ else{el('progress').max=Math.max(1,run.planned);el('progress').value=accounted;}
  el('progress-label').textContent = run.state === 'WARMING_UP'
   ? `Warming up: ${(run.warmupSent ?? 0).toLocaleString()} of ${(run.warmupPlanned ?? 0).toLocaleString()} warm-up requests sent (not stored)`
-  : `${accounted.toLocaleString()} of ${run.planned.toLocaleString()} scheduled submissions accounted for`
+  : (run.settings.endless ? `${accounted.toLocaleString()} submissions accounted for · runs until stopped`
+     : `${accounted.toLocaleString()} of ${run.planned.toLocaleString()} scheduled submissions accounted for`)
    + (run.warmupSent ? ` · warm-up: ${run.warmupSent.toLocaleString()} sent, ${run.warmupFailed.toLocaleString()} failed` : '');
  el('not-sent').textContent=run.notSent?`${run.notSent.toLocaleString()} submissions were not sent before the run stopped.`:'';
+ const r = run.resend;
+ el('resend-status').textContent = !r ? (run.blocked ? `${run.blocked.toLocaleString()} submissions were blocked (backend busy, nothing stored). Resend them after the run.` : '')
+  : `Resend pass ${r.pass} ${r.state === 'RESENDING' ? 'in progress' : r.state.toLowerCase()}: ${r.sent.toLocaleString()} of ${r.planned.toLocaleString()} sent, ${r.accepted.toLocaleString()} accepted, ${r.blocked.toLocaleString()} blocked again, ${(r.unknown + r.failed).toLocaleString()} other.`;
+ el('resend-blocked').disabled = run.finishedAt == null || run.state === 'RESENDING' || !run.blocked;
  const finished=terminal(run.state);
  updateControls();el('stop').disabled=finished||run.state==='DRAINING';
- for(const input of el('run-form').querySelectorAll('input, button'))input.disabled=!finished;
+ for(const input of el('run-form').querySelectorAll('input, select, button:not(.hint)'))input.disabled=!finished;
  updateCapacityInput();
  el('download').hidden=false;el('download').href=generator.reportUrl(run.runId);
  if(run.error)showError(run.error);
@@ -136,10 +170,14 @@ el('run-form').addEventListener('submit',async event=>{
  settings.maxInFlight = el('unlimited').checked ? null : Number(el('capacity').value);
  settings.submissionMode = selectedMode();
  settings.retryEnabled = el('retry').checked;
+ settings.httpClient = el('http-client').value;
+ settings.endless = el('endless').checked;
+ settings.durationMinutes = Number(el('duration').value) || 1; // sent even when disabled (endless) for validation
  try{const run=await generator.start(settings);render(run);subscribe(run.runId);}
  catch(error){showError(error.message);await refreshCurrentRun();}
  finally { starting=false;updateControls();updateCapacityInput(); }
 });
+el('resend-blocked').addEventListener('click',async()=>{el('resend-blocked').disabled=true;showError('');try{const run=await generator.resendBlocked(activeId);render(run);subscribe(run.runId);}catch(error){showError(error.message);}});
 el('stop').addEventListener('click',async()=>{el('stop').disabled=true;try{render(await generator.stop(activeId));}catch(error){showError(error.message);el('stop').disabled=false;}});
 async function refreshCurrentRun() {
  try {

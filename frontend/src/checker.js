@@ -11,6 +11,7 @@ export const VERDICT_LABELS = {
 const EXAMPLE_LABELS = {
     acceptedButMissing: 'Accepted but missing',
     unknownNotSaved: 'Unknown, never arrived',
+    blockedButSaved: 'Blocked but saved',
     rejectedButSaved: 'Rejected but saved',
     unexpected: 'Unexpected',
 };
@@ -27,6 +28,8 @@ export function checkRows(report) {
         ['Outcome unknown', unknown.total, ''],
         ['Unknown, saved anyway', unknown.saved, ''],
         ['Unknown, never arrived', unknown.notSaved, ''],
+        ['Blocked (backend busy)', report.blocked?.total ?? 0, ''],
+        ['Blocked but saved', report.blocked?.saved ?? 0, problem(report.blocked?.saved ?? 0)],
         ['Rejected but saved', report.rejectedButSaved, problem(report.rejectedButSaved)],
         ['Unexpected cases', report.unexpected, problem(report.unexpected)],
     ];
@@ -58,11 +61,14 @@ export class CheckerView {
             this.loadLatest(run.runId);
         }
         this.finished = run.finishedAt != null;
+        this.noop = run.settings?.submissionMode === 'NOOP';
+        if (this.noop) this.clear('Not applicable', 'Connection tests store nothing, so there is nothing to check.');
         this.updateButton();
     }
 
     /** Called when the pipeline has settled (or polling gave up) after the run: check once, automatically. */
     autoCheck(runId) {
+        if (this.noop) return;
         if (runId !== this.runId || !this.finished || this.report || this.autoChecked || this.busy) return;
         this.autoChecked = true;
         this.check();
@@ -129,7 +135,7 @@ export class CheckerView {
     }
 
     updateButton() {
-        this.button.disabled = !this.finished || this.busy;
+        this.button.disabled = !this.finished || this.busy || this.noop;
         this.button.textContent = this.report ? 'Check again' : 'Check run';
     }
 

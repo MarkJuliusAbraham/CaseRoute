@@ -23,8 +23,10 @@ public class SecurityConfig {
                 .matcher(HttpMethod.POST, "/api/cases/direct");
         var warmUp = PathPatternRequestMatcher.withDefaults()
                 .matcher(HttpMethod.POST, "/api/cases/warmup");
+        var connectionTest = PathPatternRequestMatcher.withDefaults()
+                .matcher(HttpMethod.POST, "/api/cases/noop");
         RequestMatcher createCase = request -> submitCase.matches(request) || createCaseDirectly.matches(request)
-                || warmUp.matches(request);
+                || warmUp.matches(request) || connectionTest.matches(request);
         // Client request IDs are random UUIDs known only to the submitter, so the ID itself grants access.
         var caseStatus = PathPatternRequestMatcher.withDefaults()
                 .matcher(HttpMethod.GET, "/api/cases/requests/{clientRequestId}");
@@ -33,7 +35,11 @@ public class SecurityConfig {
                 .matcher(HttpMethod.DELETE, "/api/simulation/cases");
         var ipv4Loopback = new IpAddressMatcher("127.0.0.0/8");
         var ipv6Loopback = new IpAddressMatcher("::1");
-        RequestMatcher localReset = request -> resetEnabled && resetPath.matches(request)
+        // Pausing the downstream pipeline is a local experiment control, like the reset.
+        var pipelinePath = PathPatternRequestMatcher.withDefaults().matcher("/api/simulation/pipeline");
+        var sheddingPath = PathPatternRequestMatcher.withDefaults().matcher("/api/simulation/shedding");
+        RequestMatcher localReset = request -> resetEnabled
+                && (resetPath.matches(request) || pipelinePath.matches(request) || sheddingPath.matches(request))
                 && (ipv4Loopback.matches(request) || ipv6Loopback.matches(request));
 
         var reportPath = PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/simulation/cases");

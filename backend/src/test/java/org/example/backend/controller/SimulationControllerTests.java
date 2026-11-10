@@ -19,6 +19,49 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class SimulationControllerTests {
     @Autowired MockMvc mvc;
     @MockitoBean SimulationService simulation;
+    @MockitoBean org.example.backend.service.PipelineControl pipeline;
+
+    @Test void localCallersCanPauseResumeAndReadTheDownstreamPipeline() throws Exception {
+        org.mockito.BDDMockito.given(pipeline.isPaused()).willReturn(true);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/simulation/pipeline")
+                        .with(request -> { request.setRemoteAddr("127.0.0.1"); return request; })
+                        .contentType("application/json").content("{\"paused\":true}"))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.paused").value(true));
+        verify(pipeline).setPaused(true);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/simulation/pipeline")
+                        .with(request -> { request.setRemoteAddr("127.0.0.1"); return request; }))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.paused").value(true));
+    }
+
+    @Test void localCallersCanSwitchLoadSheddingAndReadItsState() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/simulation/shedding")
+                        .with(request -> { request.setRemoteAddr("127.0.0.1"); return request; })
+                        .contentType("application/json").content("{\"enabled\":true,\"maxConcurrent\":500}"))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.enabled").value(true))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.maxConcurrent").value(500));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/simulation/shedding")
+                        .with(request -> { request.setRemoteAddr("127.0.0.1"); return request; })
+                        .contentType("application/json").content("{\"enabled\":true,\"maxConcurrent\":0}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/simulation/shedding")
+                        .with(request -> { request.setRemoteAddr("10.0.0.5"); return request; })
+                        .contentType("application/json").content("{\"enabled\":false}"))
+                .andExpect(status().isForbidden());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/simulation/shedding")
+                        .with(request -> { request.setRemoteAddr("127.0.0.1"); return request; }))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.enabled").value(true));
+    }
+
+    @Test void remoteCallersCannotPauseThePipeline() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/simulation/pipeline")
+                        .with(request -> { request.setRemoteAddr("10.0.0.5"); return request; })
+                        .contentType("application/json").content("{\"paused\":true}"))
+                .andExpect(status().isForbidden());
+        org.mockito.Mockito.verify(pipeline, org.mockito.Mockito.never()).setPaused(org.mockito.ArgumentMatchers.anyBoolean());
+    }
 
     @Test void confirmedLocalResetReturnsNoContent() throws Exception {
         mvc.perform(delete("/api/simulation/cases")

@@ -34,6 +34,8 @@ export class SavedCasesPoller {
         }
         this.active = run.finishedAt == null;
         this.accepted = run.accepted;
+        // Connection tests store nothing: there are no saved cases to poll for.
+        if (run.settings?.submissionMode === 'NOOP') { this.stop(); return; }
         if (!this.active && this.finishedSeenAt == null) this.finishedSeenAt = Date.now();
         if (this.timer == null && !this.polling) this.poll();
     }

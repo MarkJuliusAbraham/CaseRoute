@@ -12,6 +12,10 @@ export default defineConfig(({ mode }) => {
             target: env.PROCESSOR_API_URL || 'http://127.0.0.1:8083', changeOrigin: true,
             rewrite: () => '/actuator/health',
         },
+        '/api/processor/pipeline': {
+            target: env.PROCESSOR_API_URL || 'http://127.0.0.1:8083', changeOrigin: true,
+            rewrite: () => '/api/pipeline',
+        },
         '/api/simulation': { target: backend, changeOrigin: true },
         '/api/runs': {
             target: env.GENERATOR_API_URL || 'http://127.0.0.1:8081',

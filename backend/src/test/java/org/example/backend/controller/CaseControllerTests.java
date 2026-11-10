@@ -140,6 +140,19 @@ class CaseControllerTests {
     }
 
     @Test
+    void connectionTestRepliesLikeASubmissionWithoutTouchingAnything() throws Exception {
+        UUID clientRequestId = UUID.randomUUID();
+        mockMvc.perform(post("/api/cases/noop").contentType(MediaType.APPLICATION_JSON).content(body(clientRequestId)))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.clientRequestId").value(clientRequestId.toString()))
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+        mockMvc.perform(post("/api/cases/noop").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"Duplicate charge\",\"description\":\"Two charges.\"}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(caseService);
+    }
+
+    @Test
     void warmUpWritesToKafkaLikeARealSubmissionAndRepliesNoContent() throws Exception {
         UUID clientRequestId = UUID.randomUUID();
         mockMvc.perform(post("/api/cases/warmup").contentType(MediaType.APPLICATION_JSON).content(body(clientRequestId)))
