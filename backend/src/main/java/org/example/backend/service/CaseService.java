@@ -35,14 +35,14 @@ public class CaseService {
 
     private final CaseRepository repository;
     private final OutboxRepository outbox;
-    private final KafkaTemplate<String, String> kafka;
+    private final org.example.backend.messaging.IntakeProducer kafka;
     private final ObjectMapper json;
     private final String topic;
     private final String warmupTopic;
     private final Duration publishTimeout;
 
     public CaseService(CaseRepository repository, OutboxRepository outbox,
-            @Qualifier("intakeKafkaTemplate") KafkaTemplate<String, String> kafka, ObjectMapper json,
+            org.example.backend.messaging.IntakeProducer kafka, ObjectMapper json,
             @Value("${caseroute.kafka.submissions-topic}") String topic,
             @Value("${caseroute.kafka.warmup-topic}") String warmupTopic,
             @Value("${caseroute.kafka.publish-timeout}") Duration publishTimeout) {
@@ -106,8 +106,8 @@ public class CaseService {
                 request.subject(), request.description(), Instant.now());
         try {
             // Keyed by clientRequestId so a retried submission lands on the same partition as the original.
-            kafka.send(target, request.clientRequestId().toString(), json.writeValueAsString(message))
-                    .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            kafka.sendAndWait(target, request.clientRequestId().toString(), json.writeValueAsString(message),
+                    publishTimeout.toMillis());
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new SubmissionUnavailableException(ex);

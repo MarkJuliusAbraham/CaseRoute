@@ -16,11 +16,33 @@ public class SimulationController {
     private final SimulationService simulation;
     private final PipelineControl pipeline;
     private final LoadShedding shedding;
+    private final org.example.backend.service.ShutdownControl shutdown;
 
-    public SimulationController(SimulationService simulation, PipelineControl pipeline, LoadShedding shedding) {
+    public SimulationController(SimulationService simulation, PipelineControl pipeline, LoadShedding shedding,
+            org.example.backend.service.ShutdownControl shutdown) {
         this.simulation = simulation;
         this.pipeline = pipeline;
         this.shedding = shedding;
+        this.shutdown = shutdown;
+    }
+
+    public record Downtime(String mode) { }
+
+    /**
+     * Downtime test: takes this backend down, gracefully (finish requests in progress, then exit) or as a crash
+     * (exit instantly). Restart it by hand afterwards. Needs {@code X-Confirm-Downtime: TAKE_BACKEND_DOWN}.
+     */
+    @PostMapping("/downtime")
+    public ResponseEntity<Downtime> downtime(@RequestBody Downtime request,
+            @RequestHeader(value = "X-Confirm-Downtime", required = false) String confirmation) {
+        if (!"TAKE_BACKEND_DOWN".equals(confirmation))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Explicit confirmation is required");
+        switch (request.mode() == null ? "" : request.mode()) {
+            case "graceful" -> shutdown.graceful();
+            case "crash" -> shutdown.crash();
+            default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "mode must be graceful or crash");
+        }
+        return ResponseEntity.accepted().body(request);
     }
 
     public record SheddingSettings(boolean enabled, Integer maxConcurrent) { }

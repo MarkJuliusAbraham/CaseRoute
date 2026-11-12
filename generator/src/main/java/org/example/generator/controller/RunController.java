@@ -29,15 +29,19 @@ public class RunController {
     public RunController(RunService runs, RunChecker checker) { this.runs = runs; this.checker = checker; }
 
     /**
-     * Resends the run's blocked submissions (turned away by load shedding), after the run, at the run's rate.
-     * Progress appears in the snapshot's {@code resend} field and the live event stream.
+     * Starts a retry period after the run: passes over every submission still Skipped, Blocked or Unknown, at the
+     * run's rate, for up to {@code seconds} (default: the run's {@code retryPeriodSeconds}). Progress appears in the
+     * snapshot's {@code retry} field and the live event stream. {@code /resend-blocked} is the older name.
      */
-    @PostMapping("/{id}/resend-blocked")
-    public RunSnapshot resendBlocked(@PathVariable UUID id) {
+    @PostMapping({"/{id}/retry", "/{id}/resend-blocked"})
+    public RunSnapshot retry(@PathVariable UUID id, @RequestParam(required = false) Integer seconds) {
+        if (seconds != null && (seconds < 1 || seconds > 3600))
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "seconds must be 1 to 3600");
         LoadRun run = runs.find(id);
-        if (!run.startResend())
+        if (!run.startRetryPeriod(seconds))
             throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,
-                    "Nothing to resend: the run must be finished, not already resending, and have blocked submissions");
+                    "Nothing to retry: the run must be finished, not already retrying, and have skipped, blocked or unknown submissions");
         return run.snapshot();
     }
 
@@ -91,7 +95,7 @@ public class RunController {
                 while (!closed.get()) {
                     RunSnapshot snapshot = run.snapshot();
                     emitter.send(SseEmitter.event().name("progress").data(snapshot));
-                    if (snapshot.finishedAt() != null && !"RESENDING".equals(snapshot.state())) break;
+                    if (snapshot.finishedAt() != null && !"RETRYING".equals(snapshot.state())) break;
                     Thread.sleep(500);
                 }
                 emitter.complete();

@@ -17,11 +17,13 @@ import java.util.UUID;
  * @param rejectedButSaved  told "rejected" (4xx or mismatched reply), yet a case exists. Should be 0.
  * @param blocked           turned away by load shedding: total, and how many have a case anyway (should be 0)
  * @param unexpected        cases for this run that were never sent, or that the generator never planned. Should be 0.
+ * @param duplicates        whether repeated submissions stayed single: cases created twice and cases processed more
+ *                          than once (both should be 0), next to how many repeats the generator sent
  * @param examples          up to 10 client request IDs per problem category, for looking up individually
  */
 public record CheckReport(UUID runId, Instant checkedAt, String verdict, String summary, long casesInDatabase,
         Accepted accepted, Unknown unknown, long rejectedButSaved, Blocked blocked, long unexpected,
-        Map<String, List<UUID>> examples) {
+        Duplicates duplicates, Map<String, List<UUID>> examples) {
 
     /**
      * @param processed          saved and processed (ROUTED or FAILED)
@@ -38,4 +40,14 @@ public record CheckReport(UUID runId, Instant checkedAt, String verdict, String 
 
     /** Blocked by load shedding: definitely not stored, so {@code saved} should always be 0. */
     public record Blocked(long total, long saved) { }
+
+    /**
+     * @param requestsSent          second sends of a submission (same clientRequestId and content) during the run
+     * @param requestsAccepted      of those, acknowledged by the backend: each must still leave a single case
+     * @param casesCreatedTwice     extra cases with a clientRequestId that already has one. Should be 0 (unique index).
+     * @param processedMoreThanOnce cases, of all in the run, that received more than one processing result. Should be
+     *                              0; a Kafka redelivery after a crash can cause it without a bug. -1 if the backend
+     *                              does not report it (started before this check existed).
+     */
+    public record Duplicates(long requestsSent, long requestsAccepted, long casesCreatedTwice, long processedMoreThanOnce) { }
 }

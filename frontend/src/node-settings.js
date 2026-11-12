@@ -9,7 +9,7 @@ const NODES = {
     generator: { title: 'Generator settings', parts: ['generator-card'] },
     backend: { title: 'Backend settings', parts: ['backend-card'] },
     processor: { title: 'Processor settings', parts: ['processor-card'] },
-    kafka: { title: 'Kafka', parts: ['kafka-info'] },
+    kafka: { title: 'Kafka settings', parts: ['kafka-card'] },
     database: { title: 'PostgreSQL', parts: ['database-info', 'reset-block'] },
 };
 const STORAGE_KEY = 'caseroute.layout';

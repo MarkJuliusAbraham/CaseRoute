@@ -47,7 +47,7 @@ public class RunChecker {
     }
 
     public CheckReport check(LoadRun run) {
-        if (run.active() || run.resending())
+        if (run.active() || run.retrying())
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Check the run after it finishes");
         if (run.snapshot().settings().submissionMode() == org.example.generator.model.SubmissionMode.NOOP)
             throw new ResponseStatusException(HttpStatus.CONFLICT,
@@ -61,17 +61,32 @@ public class RunChecker {
         long inDatabase = 0, unexpected = 0, processed = 0, awaiting = 0;
         long unknownSaved = 0, rejectedButSaved = 0, blockedButSaved = 0;
         java.util.Set<Long> problemsSaved = new java.util.HashSet<>();
+        // Ledger rows per sequence number: a second row for one clientRequestId is a case created twice.
+        java.util.BitSet seen = new java.util.BitSet();
+        long createdTwice = 0, processedMoreThanOnce = 0;
+        boolean resultsReported = false;
+        long ledgerEnd = -1; // the ledger's own row count, from its last line; -1 until seen
         var examples = new LinkedHashMap<String, List<UUID>>();
         List<UUID> unexpectedExamples = new ArrayList<>();
         try (Stream<String> lines = fetchLedger(runId)) {
             for (Iterator<String> it = lines.iterator(); it.hasNext(); ) {
                 String line = it.next();
-                int comma = line.indexOf(',');
-                if (comma < 0) continue;
+                if (line.startsWith("#end,")) { ledgerEnd = Long.parseLong(line.substring(5).strip()); continue; }
+                // clientRequestId,status[,resultsReceived]
+                String[] fields = line.split(",", 3);
+                if (fields.length < 2) continue;
                 inDatabase++;
-                UUID id = UUID.fromString(line.substring(0, comma));
+                UUID id = UUID.fromString(fields[0]);
                 long sequence = org.example.generator.model.Submission.sequenceOf(runId, id);
-                boolean isProcessed = !"OPEN".equals(line.substring(comma + 1));
+                boolean isProcessed = !"OPEN".equals(fields[1]);
+                if (fields.length == 3) {
+                    resultsReported = true;
+                    if (Integer.parseInt(fields[2].strip()) > 1) { processedMoreThanOnce++; example(examples, "processedMoreThanOnce", id); }
+                }
+                if (sequence > 0 && sequence <= Integer.MAX_VALUE) {
+                    if (seen.get((int) sequence)) { createdTwice++; example(examples, "createdTwice", id); continue; }
+                    seen.set((int) sequence);
+                }
                 switch (sequence < 0 ? LoadRun.NOT_SENT : told.of(sequence)) {
                     case LoadRun.ACCEPTED -> {
                         acceptedSaved.set((int) sequence);
@@ -84,6 +99,12 @@ public class RunChecker {
                 }
             }
         }
+        // A streamed response that stops early still looks like a normal reply. Conclude nothing from a ledger that did
+        // not end with its own row count: every case it left out would be reported as missing.
+        if (ledgerEnd < 0 || ledgerEnd != inDatabase)
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, ledgerEnd < 0
+                    ? String.format("The backend's ledger ended early, after %,d cases, so nothing was concluded. Check again; if it repeats, the backend may be cutting long downloads short (or predates the ledger's end line).", inDatabase)
+                    : String.format("The backend's ledger listed %,d cases but said it sent %,d, so nothing was concluded. Check again.", inDatabase, ledgerEnd));
         long missing = acceptedTotal - processed - awaiting;
         // Examples of accepted-but-missing: the first accepted sequence numbers with no saved case.
         for (long sequence = 1; sequence <= told.handled() && missing > 0
@@ -101,13 +122,17 @@ public class RunChecker {
         }
         for (UUID id : unexpectedExamples) example(examples, "unexpected", id);
 
-        String verdict = missing > 0 || rejectedButSaved > 0 || blockedButSaved > 0 || unexpected > 0 ? "DISCREPANCIES"
+        String verdict = missing > 0 || rejectedButSaved > 0 || blockedButSaved > 0 || unexpected > 0
+                || createdTwice > 0 || processedMoreThanOnce > 0 ? "DISCREPANCIES"
                 : awaiting > 0 ? "PENDING" : "CONSISTENT";
+        var sent = run.snapshot().duplicates();
+        var duplicates = new CheckReport.Duplicates(sent.sent(), sent.accepted(), createdTwice,
+                resultsReported ? processedMoreThanOnce : -1);
         var report = new CheckReport(run.id(), Instant.now(), verdict,
-                summary(verdict, acceptedTotal, processed, awaiting, missing, unknownTotal, unknownSaved),
+                summary(verdict, acceptedTotal, processed, awaiting, missing, unknownTotal, unknownSaved, duplicates),
                 inDatabase, new CheckReport.Accepted(acceptedTotal, processed, awaiting, missing),
                 new CheckReport.Unknown(unknownTotal, unknownSaved, unknownTotal - unknownSaved),
-                rejectedButSaved, new CheckReport.Blocked(blockedTotal, blockedButSaved), unexpected, examples);
+                rejectedButSaved, new CheckReport.Blocked(blockedTotal, blockedButSaved), unexpected, duplicates, examples);
         latest.put(run.id(), report);
         save(report);
         return report;
@@ -136,12 +161,24 @@ public class RunChecker {
     }
 
     private static String summary(String verdict, long accepted, long processed, long awaiting, long missing,
-            long unknown, long unknownSaved) {
+            long unknown, long unknownSaved, CheckReport.Duplicates duplicates) {
+        String base = baseSummary(verdict, accepted, processed, awaiting, missing, unknown, unknownSaved, duplicates);
+        if (duplicates.requestsSent() == 0) return base;
+        return base + (duplicates.casesCreatedTwice() == 0 && duplicates.processedMoreThanOnce() <= 0
+                ? String.format(" %,d repeated submissions left no extra cases and no double processing.", duplicates.requestsSent())
+                : String.format(" Of %,d repeated submissions: %,d extra cases, %,d cases processed more than once.",
+                        duplicates.requestsSent(), duplicates.casesCreatedTwice(), Math.max(0, duplicates.processedMoreThanOnce())));
+    }
+
+    private static String baseSummary(String verdict, long accepted, long processed, long awaiting, long missing,
+            long unknown, long unknownSaved, CheckReport.Duplicates duplicates) {
         String base = switch (verdict) {
             case "CONSISTENT" -> "Every accepted submission was saved and processed.";
             case "PENDING" -> String.format("No discrepancies so far; %,d accepted cases are still being processed.", awaiting);
             default -> missing > 0
                     ? String.format("%,d accepted submissions have no saved case. If the pipeline is still draining, they may be waiting in Kafka: check again.", missing)
+                    : duplicates.casesCreatedTwice() > 0 || duplicates.processedMoreThanOnce() > 0
+                    ? "Some submissions were stored or processed more than once."
                     : "The system holds cases the client was told were rejected or never sent.";
         };
         if (unknown == 0) return base;

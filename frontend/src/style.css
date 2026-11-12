@@ -119,6 +119,27 @@ main[hidden]{display:none}
 .checker details{font-size:13px;margin-bottom:8px}.checker summary{cursor:pointer;color:var(--accent)}.checker ul{font:12px/1.7 Consolas,monospace;padding-left:18px;overflow-wrap:anywhere}
 .checker [data-check-run]{width:auto}
 .metrics{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+/* Outcomes: one bar for every planned submission, then the run, the retry period and the connections. */
+.results{margin:18px 0 8px}.results .section-heading{align-items:baseline;gap:12px;flex-wrap:wrap}.results h2{font-size:20px;margin:0}
+.outcome-bar{display:flex;height:16px;border-radius:8px;overflow:hidden;background:#e7ebe8;margin:10px 0 12px}
+.outcome-bar .segment{min-width:2px}
+.segment.accepted,.legend-item.accepted::before{background:var(--accent)}
+.segment.unresolved,.legend-item.unresolved::before{background:#c98a1b}
+.segment.rejected,.legend-item.rejected::before{background:var(--danger)}
+.segment.not-sent,.legend-item.not-sent::before{background:#8c9894}
+.segment.pending,.legend-item.pending::before{background:#cdd6d2}
+.outcome-legend{display:flex;flex-wrap:wrap;gap:8px 28px;margin:0 0 18px}
+.legend-item{position:relative;padding-left:16px}.legend-item::before{content:"";position:absolute;left:0;top:7px;width:10px;height:10px;border-radius:3px}
+.legend-item dt{font-size:12px;color:var(--muted)}.legend-item dd{margin:0;font-size:24px;font-variant-numeric:tabular-nums;display:inline}
+.legend-item .share{margin-left:8px;font-size:13px;color:var(--muted)}.legend-item .detail{display:block;font-size:12px;color:var(--muted)}
+.phase-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.phase{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--surface)}
+.phase h3{font-size:15px;margin:0 0 6px}
+.phase-numbers{display:grid;grid-template-columns:1fr auto;gap:3px 12px;margin:6px 0 0;font-size:14px}
+.phase-numbers div{display:contents}.phase-numbers dt{color:var(--muted)}.phase-numbers dd{margin:0;font-size:14px;line-height:1.5;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.phase-numbers dd.problem{color:var(--danger)}.phase-numbers dd.good{color:var(--accent)}
+.retry-passes{margin:8px 0 0;padding-left:0;list-style:none;font-size:12px;color:var(--muted)}.retry-passes li{margin:2px 0}
+@media(max-width:1000px){.phase-grid{grid-template-columns:1fr}}
 
 /* Documentation view. */
 .docs{display:grid;grid-template-columns:200px minmax(0,1fr);gap:44px;align-items:start}
@@ -129,6 +150,8 @@ main[hidden]{display:none}
 .docs-content section:last-child{border-bottom:0}.docs-content h2{font-size:26px;margin-bottom:6px}.docs-content h3{font-size:16px;margin:26px 0 4px}
 .docs-content p,.docs-content li,.docs-content dd{font-size:15px;color:var(--muted)}.docs-content strong{color:var(--ink)}.docs-content li{margin:6px 0}
 .docs-content code{font:13px Consolas,monospace;background:#e9ece8;color:var(--ink);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.docs-faq-index{font-size:14px}.docs-content h3[id^="faq-"]{scroll-margin-top:20px;margin-top:28px}
+.docs-faq dt{font-size:15px;font-weight:600;color:var(--ink);margin-top:16px}.docs-faq dd{margin:4px 0 0;line-height:1.6;font-size:15px;color:var(--muted)}
 .docs-terms dt{font-size:15px;font-weight:600;color:var(--ink);margin-top:14px}.docs-terms dd{margin:3px 0 0;line-height:1.6}
 .docs-table{margin:12px 0;white-space:normal}.docs-table td,.docs-table th{white-space:normal;vertical-align:top;padding:10px 12px;font-size:14px}
 .docs-table td:first-child{font-family:inherit;font-size:14px;min-width:150px}.docs-table td{color:var(--muted)}
@@ -138,6 +161,19 @@ main[hidden]{display:none}
 /* ---- Layout: three compact settings cards above a full-width run bar and monitor. Hints sit behind (i) buttons. ---- */
 main{padding-top:26px}
 .settings-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:16px;align-items:start}
+.kafka-card{grid-column:1/-1}
+.kafka-card .card-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:start}
+.kafka-card [data-kafka-lock]{grid-column:1/-1}
+.sub-heading{font-size:14px;margin:0 0 6px}
+.kafka-card [data-kafka-producer] button[type="submit"]{width:auto;flex:none;padding-inline:18px}
+.partition-rows{display:grid;gap:6px}
+.partition-row{display:grid;grid-template-columns:minmax(0,1fr) 2.5em 72px auto;align-items:center;gap:8px;font-size:13px}
+.partition-row .status-line{grid-column:3/-1;margin:0}
+.partition-row input{width:72px}
+.kafka-metrics{display:grid;grid-template-columns:1fr auto;gap:2px 12px;margin:0;font-size:13px}
+.kafka-metrics div{display:contents}.kafka-metrics dt{color:var(--muted)}.kafka-metrics dd{margin:0;font-size:13px;line-height:1.5;text-align:right;font-variant-numeric:tabular-nums}
+dialog .kafka-card .card-body{grid-template-columns:1fr}
+@media(max-width:1000px){.kafka-card .card-body{grid-template-columns:1fr}}
 .card,.run-bar{background:var(--surface);border:1px solid var(--line);border-radius:12px}
 .card{padding:14px 16px 16px}
 .card-heading{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px}
@@ -154,6 +190,7 @@ main{padding-top:26px}
 .toggle-row .limit-toggle{margin:0;font-size:14px}
 .sub-block{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
 .sub-block>.toggle-row:first-child{margin-top:0}
+.inline-field[hidden]{display:none}
 .inline-field{display:flex;align-items:center;gap:10px;margin-top:8px}
 .inline-field label{font-size:13px;font-weight:600;margin:0;white-space:nowrap}.inline-field input{width:110px}
 .status-line{font-size:12px;line-height:1.45;color:var(--muted);margin:6px 0 0;max-width:none}
@@ -214,6 +251,7 @@ main[data-layout="simple"] .settings-grid,
 main[data-layout="simple"] .traffic-readouts,
 main[data-layout="simple"] .traffic meter,
 main[data-layout="simple"] .monitor>.metrics,
+main[data-layout="simple"] .monitor>.results,
 main[data-layout="simple"] .progress-row,
 main[data-layout="simple"] #progress,
 main[data-layout="simple"] #not-sent{display:none}
@@ -233,3 +271,81 @@ main[data-layout="simple"] #not-sent{display:none}
 .node-info code{font:13px Consolas,monospace;background:#e9ece8;padding:1px 5px;border-radius:4px;color:var(--ink)}
 .node-dialog-footer{display:flex;justify-content:flex-end;margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}
 .node-dialog-footer button{width:auto;margin:0;padding:7px 16px}
+button.secondary.danger{color:var(--danger);border-color:#d9b4b0}
+.preset-field select{font:inherit;font-size:14px;padding:6px 8px;border:1px solid #879b94;border-radius:6px;background:var(--surface);color:var(--ink);width:100%}
+.preset-text{font-size:12px;line-height:1.45;color:var(--muted);margin:6px 0 0}.preset-text:empty{display:none}.preset-text .preset-look{display:block;margin-top:3px;color:var(--ink)}
+
+/* === Dashboard layout === */
+/* Settings on the left, the run and its results on the right, each part in its own card. */
+:root{--paper:#f3f4f2;--line:#d6dcd9;--line-strong:#bfc8c4;--radius:10px;--shadow:0 1px 2px rgb(25 43 42 / 6%)}
+main[data-view="simulator"]{max-width:1640px;margin:0 auto;padding:20px 28px 40px}
+.layout-switch{margin:0 0 16px}
+.sim-layout{display:grid;grid-template-columns:400px minmax(0,1fr);gap:20px;align-items:start}
+.settings-column{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto;padding-right:4px;scrollbar-width:thin}
+.settings-column .settings-grid{display:flex;flex-direction:column;gap:14px;margin:0}
+.observe-column{display:flex;flex-direction:column;gap:16px;min-width:0}
+
+/* Cards: one look everywhere. */
+.card,.run-bar,.observe-column .traffic,.observe-column .results,.observe-column .checker{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.card{padding:16px 18px 18px}
+.card-heading{padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--line)}
+.card-heading h2{font-size:15px;font-weight:650;letter-spacing:.01em}
+.card .sub-block{border-top:1px solid var(--line);margin-top:14px;padding-top:14px}
+.form-group-title{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:18px 0 8px}
+.card-body>.preset-field+.form-group-title{margin-top:16px}
+.settings-column .field-pair{gap:10px}
+.settings-column .inline-field{flex-wrap:wrap}
+.estimate{margin:14px 0 0;padding:10px 12px;background:#f3f6f4;border-radius:8px;font-size:13px;color:var(--muted)}
+
+/* Kafka in the narrow column: one column inside. */
+.settings-column .kafka-card{grid-column:auto}
+.settings-column .kafka-card .card-body{display:block}
+.settings-column .kafka-card .card-body>*+*{margin-top:14px}
+.settings-column .partition-row{grid-template-columns:minmax(0,1fr) 2em 64px auto}
+
+/* Run bar: always in reach at the top of the right column. */
+.run-bar{position:sticky;top:12px;z-index:5;padding:12px 16px}
+.run-bar .run-bar-main{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.run-bar #run-id,.run-bar #retry-status{margin:8px 0 0;font-size:12px;color:var(--muted)}
+.run-bar #retry-status:empty{display:none}
+
+/* Pipeline, outcomes and checker as cards with the same header style. */
+.observe-column .monitor{display:flex;flex-direction:column;gap:16px;margin:0}
+.observe-column .traffic,.observe-column .results,.observe-column .checker{margin:0;padding:16px 18px 18px}
+.observe-column .section-heading{padding-bottom:10px;margin-bottom:6px;border-bottom:1px solid var(--line)}
+.observe-column .section-heading h2,.observe-column .results h2,.observe-column .checker h2{font-size:15px;font-weight:650;margin:0}
+.traffic canvas{margin:6px 0 10px;height:300px}
+.traffic-readouts{grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:8px 0 10px;padding-top:0;border-top:0}
+.traffic-readouts>div{background:#f6f8f7;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.traffic-readouts dt{font-size:11px;color:var(--muted)}.traffic-readouts dd{font-size:20px;margin-top:2px}
+.phase{box-shadow:none;background:#fbfcfb}
+.phase-numbers:empty::before{content:"Shown once a run starts.";color:var(--muted);font-size:13px}
+.results .outcome-legend:empty{display:none}
+.observe-column #download{align-self:flex-start;font-size:13px}
+.check-metrics{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+
+/* Simple view: no settings column; the run and its results use the full width. */
+main[data-layout="simple"] .sim-layout{grid-template-columns:minmax(0,1fr)}
+main[data-layout="simple"] .settings-column{display:none}
+
+/* Narrower screens: settings above, not beside. */
+@media(max-width:1100px){
+ .sim-layout{grid-template-columns:minmax(0,1fr)}
+ .settings-column{position:static;max-height:none;overflow:visible;padding-right:0}
+ .settings-column .settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+ .settings-column .kafka-card{grid-column:1/-1}
+ .traffic-readouts{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:700px){
+ main[data-view="simulator"]{padding:16px}
+ .settings-column .settings-grid{grid-template-columns:minmax(0,1fr)}
+ .traffic-readouts{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .run-bar{position:static}
+}
+.settings-column select{font:inherit;font-size:14px;padding:7px 8px;border:1px solid #879b94;border-radius:6px;background:var(--surface);color:var(--ink);min-width:88px}
+.settings-column .kafka-card .field select{width:100%}
+.phase-grid{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.phase-numbers{grid-template-columns:minmax(0,1fr) auto}
+.phase-numbers dt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.phase-numbers dd{max-width:200px;overflow-wrap:anywhere}
+.run-bar #download{display:inline-block;margin-top:6px;font-size:12px}.run-bar #download[hidden]{display:none}

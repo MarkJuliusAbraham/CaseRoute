@@ -46,10 +46,11 @@ import java.util.concurrent.TimeUnit;
  *       where one side closes a connection the other is sending on.</li>
  *   <li>Its pool reuses the connections already open first; open connections that are not needed just wait,
  *       which costs the backend almost nothing.</li>
- *   <li>The waiting line is short ({@code generator.jetty.max-queued}): a request that finds it full is counted as
- *       SKIPPED, never sent. A long line let waits grow until requests timed out, and on HTTP/1.1 every timed-out
- *       request closes its connection: a new one has to be opened and the old port stays reserved for 2 minutes
- *       (TIME_WAIT), which builds up until no ports are left.</li>
+ *   <li>The waiting line ({@code generator.jetty.max-queued}) is sized so a wait can never reach the request
+ *       timeout: a request that finds it full is counted as SKIPPED, never sent. Too long a line (100,000) let waits
+ *       grow until requests timed out, and on HTTP/1.1 every timed-out request closes its connection: a new one has
+ *       to be opened and the old port stays reserved for 2 minutes (TIME_WAIT), which builds up until no ports are
+ *       left. Too short a line (10,000, ~1 s) turned every brief stall into skips.</li>
  * </ul>
  * Connections opened and closed are counted ({@link #connectionsOpened()}, {@link #connectionsClosed()}); in a
  * healthy run neither changes after the warm-up.
@@ -79,7 +80,7 @@ public class CaseClient {
             @Value("${generator.http-clients:8}") int httpClients,
             @Value("${generator.jetty.clients:8}") int jettyClients,
             @Value("${generator.jetty.max-connections:2000}") int jettyMaxConnections,
-            @Value("${generator.jetty.max-queued:10000}") int jettyMaxQueued,
+            @Value("${generator.jetty.max-queued:40000}") int jettyMaxQueued,
             @Value("${generator.jetty.selectors:1}") int jettySelectors,
             @Value("${generator.jetty.idle-timeout:0}") java.time.Duration jettyIdleTimeout) {
         this.json = json;
@@ -101,7 +102,7 @@ public class CaseClient {
 
     /** Convenience for tests and callers that only use the built-in client. */
     public CaseClient(ObjectMapper json, URI target, int httpClients) {
-        this(json, target, httpClients, 8, 2000, 10_000, 1, java.time.Duration.ZERO);
+        this(json, target, httpClients, 8, 2000, 40_000, 1, java.time.Duration.ZERO);
     }
 
     /** Which JDK client carries a submission: fixed per clientRequestId, so a retry uses the same client. */
@@ -172,9 +173,35 @@ public class CaseClient {
                 return result(submission, "SKIPPED", null, null, start, schedulingDelayMs,
                         "Generator's queue full; not sent");
             }
+            if (connectionRefused(ex)) {
+                // No connection was ever made, so the request never reached the backend: nothing can have been
+                // stored. A connection that breaks mid-request (reset, closed) stays UNKNOWN: the backend may have it.
+                return result(submission, "SKIPPED", null, null, start, schedulingDelayMs, REFUSED + "; not sent");
+            }
             return result(submission, "UNKNOWN", null, null, start, schedulingDelayMs,
                     describe(ex) + "; database outcome unknown");
         }
+    }
+
+    /** Detail of a submission whose connection was refused: the backend is not listening. */
+    public static final String REFUSED = "Connection refused: backend not reachable";
+
+    /** The connection was never established (refused): the request cannot have been sent. */
+    static boolean connectionRefused(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof java.net.ConnectException) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Whether a reply shows the backend was not reachable: no HTTP status at all, because the connection was refused,
+     * broke, or timed out. Any HTTP reply, even an error, means the backend is there.
+     */
+    public static boolean unreachable(SubmissionResult result) {
+        if (result.httpStatus() != null) return false;
+        return "UNKNOWN".equals(result.outcome())
+                || ("SKIPPED".equals(result.outcome()) && result.detail() != null && result.detail().startsWith(REFUSED));
     }
 
     /** Jetty rejects a request it has no room to queue with a RejectedExecutionException, before sending anything. */

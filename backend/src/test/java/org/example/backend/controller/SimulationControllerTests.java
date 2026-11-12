@@ -20,6 +20,28 @@ class SimulationControllerTests {
     @Autowired MockMvc mvc;
     @MockitoBean SimulationService simulation;
     @MockitoBean org.example.backend.service.PipelineControl pipeline;
+    @MockitoBean org.example.backend.service.ShutdownControl shutdown;
+
+    @Test void downtimeTestsNeedConfirmationAndALocalCaller() throws Exception {
+        var request = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/simulation/downtime");
+        mvc.perform(request.with(r -> { r.setRemoteAddr("127.0.0.1"); return r; })
+                        .contentType("application/json").content("{\"mode\":\"crash\"}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/simulation/downtime")
+                        .with(r -> { r.setRemoteAddr("10.0.0.5"); return r; }).header("X-Confirm-Downtime", "TAKE_BACKEND_DOWN")
+                        .contentType("application/json").content("{\"mode\":\"crash\"}"))
+                .andExpect(status().is4xxClientError());
+        verifyNoInteractions(shutdown);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/simulation/downtime")
+                        .with(r -> { r.setRemoteAddr("127.0.0.1"); return r; }).header("X-Confirm-Downtime", "TAKE_BACKEND_DOWN")
+                        .contentType("application/json").content("{\"mode\":\"graceful\"}"))
+                .andExpect(status().isAccepted());
+        verify(shutdown).graceful();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/simulation/downtime")
+                        .with(r -> { r.setRemoteAddr("127.0.0.1"); return r; }).header("X-Confirm-Downtime", "TAKE_BACKEND_DOWN")
+                        .contentType("application/json").content("{\"mode\":\"sideways\"}"))
+                .andExpect(status().isBadRequest());
+    }
 
     @Test void localCallersCanPauseResumeAndReadTheDownstreamPipeline() throws Exception {
         org.mockito.BDDMockito.given(pipeline.isPaused()).willReturn(true);

@@ -38,6 +38,67 @@ class CaseSubmissionPipelineTests {
     @Autowired org.example.backend.service.PipelineControl pipeline;
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("intakeKafkaTemplate")
     KafkaTemplate<String, String> intakeKafka;
+    @Autowired org.example.backend.messaging.IntakeProducer intake;
+    @Autowired org.example.backend.messaging.KafkaTopics topics;
+
+    @Test
+    void intakeProducerSettingsChangeBetweenRunsAndSubmissionsUseTheNewProducer() throws Exception {
+        var original = intake.settings();
+        assertEquals(5, original.lingerMs(), "starts from spring.kafka.producer.properties.linger.ms");
+        try {
+            var tuned = new org.example.backend.messaging.IntakeProducer.Settings(20, 65_536, "lz4", 1, 3);
+            assertEquals(tuned, intake.apply(tuned));
+            assertEquals(3, intake.templates().size());
+            var runId = UUID.randomUUID();
+            for (int i = 0; i < 20; i++)
+                cases.submitCase(new CreateCaseRequest(UUID.randomUUID(), runId, "Tuned " + i, "lz4, linger 20 ms."));
+            // Used in turn: every producer sent some of the 20.
+            for (var template : intake.templates()) {
+                double sent = template.metrics().entrySet().stream()
+                        .filter(e -> e.getKey().group().equals("producer-metrics") && e.getKey().name().equals("record-send-total"))
+                        .mapToDouble(e -> ((Number) e.getValue().metricValue()).doubleValue()).sum();
+                assertTrue(sent >= 6, "each producer carried its share: " + sent);
+            }
+            var metrics = intake.metrics();
+            assertTrue(metrics.get("record-send-rate") != null, "metrics come from the new producer: " + metrics);
+            assertTrue(metrics.get("compression-rate-avg") != null && metrics.get("compression-rate-avg") < 1.0,
+                    "lz4 actually compresses: " + metrics);
+            assertEquals(0, intake.sending());
+            await(() -> stats.stats(runId).saved() == 20);
+        } finally {
+            intake.apply(original);
+            assertEquals(1, intake.templates().size(), "back to one producer");
+        }
+    }
+
+    @Test
+    void invalidProducerSettingsAreRefusedAndChangeNothing() {
+        var before = intake.settings();
+        for (var bad : List.of(
+                new org.example.backend.messaging.IntakeProducer.Settings(-1, 16_384, "none", 5, 1),
+                new org.example.backend.messaging.IntakeProducer.Settings(5, 100, "none", 5, 1),
+                new org.example.backend.messaging.IntakeProducer.Settings(5, 16_384, "brotli", 5, 1),
+                new org.example.backend.messaging.IntakeProducer.Settings(5, 16_384, "none", 6, 1),
+                new org.example.backend.messaging.IntakeProducer.Settings(5, 16_384, "none", 5, 0),
+                new org.example.backend.messaging.IntakeProducer.Settings(5, 16_384, "none", 5, 9))) {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () -> intake.apply(bad));
+        }
+        assertEquals(before, intake.settings());
+    }
+
+    @Test
+    void partitionsCanBeAddedButNeverRemoved() {
+        var counts = topics.partitions();
+        int saved = counts.get("cases.saved");
+        assertEquals(counts.get("cases.submitted"), counts.get("cases.warmup"));
+        assertEquals(saved + 1, topics.increase("cases.saved", saved + 1).get("cases.saved"));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> topics.increase("cases.saved", saved), "Kafka cannot remove partitions");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> topics.increase("cases.warmup", 50), "the warm-up topic follows cases.submitted");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> topics.increase("cases.submitted.DLT", 5));
+    }
 
     @Test
     void processingResultsFromKafkaAreRecordedOnceAndUnreadableOnesDoNotBlock() throws Exception {
@@ -52,11 +113,16 @@ class CaseSubmissionPipelineTests {
 
         await(() -> stats.stats(runId).routed() == 1);
         Thread.sleep(1000);
-        var row = jdbc.queryForMap("SELECT status, category, assigned_team, processing_attempts FROM cases WHERE id = ?", created.id());
+        var row = jdbc.queryForMap("SELECT status, category, assigned_team, processing_attempts, results_received FROM cases WHERE id = ?", created.id());
         assertEquals("ROUTED", row.get("status"));
         assertEquals("BILLING", row.get("category"));
         assertEquals("Billing Support", row.get("assigned_team"));
         assertEquals(1, ((Number) row.get("processing_attempts")).intValue());
+        assertEquals(2, ((Number) row.get("results_received")).intValue(),
+                "the ignored second result is still counted, so a check can see the case was processed twice");
+        var ledger = new java.io.StringWriter();
+        stats.writeLedger(runId, ledger);
+        assertEquals(created.clientRequestId() + ",ROUTED,2\n#end,1\n", ledger.toString());
     }
 
     @Test
@@ -169,7 +235,7 @@ class CaseSubmissionPipelineTests {
 
         var ledger = new java.io.StringWriter();
         stats.writeLedger(runId, ledger);
-        assertEquals(request.clientRequestId() + ",OPEN\n", ledger.toString());
+        assertEquals(request.clientRequestId() + ",OPEN,0\n#end,1\n", ledger.toString());
     }
 
     @Test
@@ -205,6 +271,21 @@ class CaseSubmissionPipelineTests {
         assertTrue(clientIds.apply(intakeKafka).stream().allMatch(id -> id.startsWith("backend-intake")),
                 "submissions went through the intake producer: " + clientIds.apply(intakeKafka));
         assertTrue(clientIds.apply(kafka).stream().noneMatch(id -> id.startsWith("backend-intake")));
+    }
+
+    @Test
+    void theSameSubmissionSentTwiceThroughKafkaBecomesOneCase() throws Exception {
+        UUID runId = UUID.randomUUID();
+        var request = new CreateCaseRequest(UUID.randomUUID(), runId, "Twice", "Double-clicked submit.");
+        cases.submitCase(request);
+        cases.submitCase(request); // both accepted (202): Kafka holds two messages for one clientRequestId
+        await(() -> stats.stats(runId).saved() >= 1);
+        Thread.sleep(1500); // time for the second message to be written too, had it created a case
+        assertEquals(1, stats.stats(runId).saved());
+        var ledger = new java.io.StringWriter();
+        stats.writeLedger(runId, ledger);
+        assertEquals(1, ledger.toString().lines().filter(line -> !line.startsWith("#")).count(), "one case: " + ledger);
+        assertTrue(ledger.toString().endsWith("#end,1\n"));
     }
 
     @Test

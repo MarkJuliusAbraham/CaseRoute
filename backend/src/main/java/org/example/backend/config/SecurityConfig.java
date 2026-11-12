@@ -38,8 +38,11 @@ public class SecurityConfig {
         // Pausing the downstream pipeline is a local experiment control, like the reset.
         var pipelinePath = PathPatternRequestMatcher.withDefaults().matcher("/api/simulation/pipeline");
         var sheddingPath = PathPatternRequestMatcher.withDefaults().matcher("/api/simulation/shedding");
+        var kafkaPath = PathPatternRequestMatcher.withDefaults().matcher("/api/simulation/kafka/**");
+        var downtimePath = PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/simulation/downtime");
         RequestMatcher localReset = request -> resetEnabled
-                && (resetPath.matches(request) || pipelinePath.matches(request) || sheddingPath.matches(request))
+                && (resetPath.matches(request) || pipelinePath.matches(request) || sheddingPath.matches(request)
+                    || kafkaPath.matches(request) || downtimePath.matches(request))
                 && (ipv4Loopback.matches(request) || ipv6Loopback.matches(request));
 
         var reportPath = PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/simulation/cases");

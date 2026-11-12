@@ -52,6 +52,14 @@ public class ServiceCase {
     @Column(name = "processed_at")
     private Instant processedAt;
 
+    /**
+     * Processing results received for this case, including any the status update ignored. 1 for a case processed
+     * once; more means it was processed again (a duplicate the pipeline should have absorbed, or a Kafka redelivery).
+     * Null for cases saved before this column existed, and for cases not processed yet.
+     */
+    @Column(name = "results_received")
+    private Integer resultsReceived;
+
     public ServiceCase(UUID clientRequestId, UUID testRunId, String subject, String description) {
         this.clientRequestId = java.util.Objects.requireNonNull(clientRequestId);
         this.testRunId = testRunId;

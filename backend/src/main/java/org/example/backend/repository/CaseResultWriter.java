@@ -9,7 +9,8 @@ import java.util.List;
 
 /**
  * Records a batch of processing results in one statement. Only OPEN cases are updated, so a redelivered or
- * duplicate result changes nothing.
+ * duplicate result changes nothing. Every result is also counted per case ({@code results_received}), including the
+ * ones that change nothing, so a check can show whether any case was processed more than once.
  */
 @Repository
 public class CaseResultWriter {
@@ -20,6 +21,12 @@ public class CaseResultWriter {
             FROM unnest(?::uuid[], ?::text[], ?::text[], ?::text[], ?::int[], ?::timestamptz[])
                  AS v(id, status, category, team, attempts, processed_at)
             WHERE c.id = v.id AND c.status = 'OPEN'
+            """;
+
+    private static final String COUNT = """
+            UPDATE cases c SET results_received = COALESCE(c.results_received, 0) + v.n
+            FROM unnest(?::uuid[], ?::int[]) AS v(id, n)
+            WHERE c.id = v.id
             """;
 
     private final JdbcTemplate jdbc;
@@ -42,11 +49,23 @@ public class CaseResultWriter {
             attempts[i] = String.valueOf(r.attempts());
             processedAt[i] = r.processedAt().toString();
         }
-        return jdbc.update(connection -> {
+        int changed = jdbc.update(connection -> {
             var statement = connection.prepareStatement(UPDATE);
             String[][] columns = { ids, statuses, categories, teams, attempts, processedAt };
             for (int i = 0; i < columns.length; i++) statement.setArray(i + 1, connection.createArrayOf("text", columns[i]));
             return statement;
         });
+        // Counted per case first: a batch can hold two results for one case, and an UPDATE ... FROM joins each row once.
+        var counts = new java.util.LinkedHashMap<String, Integer>();
+        for (String id : ids) counts.merge(id, 1, Integer::sum);
+        String[] countIds = counts.keySet().toArray(String[]::new);
+        String[] countValues = counts.values().stream().map(String::valueOf).toArray(String[]::new);
+        jdbc.update(connection -> {
+            var statement = connection.prepareStatement(COUNT);
+            statement.setArray(1, connection.createArrayOf("text", countIds));
+            statement.setArray(2, connection.createArrayOf("text", countValues));
+            return statement;
+        });
+        return changed;
     }
 }

@@ -14,6 +14,8 @@ const EXAMPLE_LABELS = {
     blockedButSaved: 'Blocked but saved',
     rejectedButSaved: 'Rejected but saved',
     unexpected: 'Unexpected',
+    createdTwice: 'Case created twice',
+    processedMoreThanOnce: 'Processed more than once',
 };
 
 /** The rows of the result table: [label, value, tone], where tone 'problem' marks a count that should be 0. */
@@ -32,6 +34,14 @@ export function checkRows(report) {
         ['Blocked but saved', report.blocked?.saved ?? 0, problem(report.blocked?.saved ?? 0)],
         ['Rejected but saved', report.rejectedButSaved, problem(report.rejectedButSaved)],
         ['Unexpected cases', report.unexpected, problem(report.unexpected)],
+        ['Cases in the database', report.casesInDatabase ?? 0, ''],
+        // Repeated submissions (same clientRequestId sent again) must not create or process anything twice.
+        ...(report.duplicates ? [
+            ['Repeated submissions sent', report.duplicates.requestsSent, ''],
+            ['Cases created twice', report.duplicates.casesCreatedTwice, problem(report.duplicates.casesCreatedTwice)],
+            ['Processed more than once', report.duplicates.processedMoreThanOnce < 0 ? '—' : report.duplicates.processedMoreThanOnce,
+                problem(report.duplicates.processedMoreThanOnce)],
+        ] : []),
     ];
 }
 

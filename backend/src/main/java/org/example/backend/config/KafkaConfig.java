@@ -1,7 +1,6 @@
 package org.example.backend.config;
 
 import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.config.TopicConfig;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -15,7 +14,6 @@ import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.FixedBackOff;
 
 import java.time.Duration;
-import java.util.Map;
 
 /**
  * Topics are created (or updated, see {@code spring.kafka.admin.modify-topic-configs}) at startup.
@@ -103,16 +101,14 @@ public class KafkaConfig {
 
     /**
      * Customer-facing sends: {@code POST /api/cases} and its warm-up. Every request waits for its own
-     * confirmation, so they get their own producer (same settings, separate buffer, network thread and
-     * connection). The relay publishes in bursts of up to 1,000 messages; on a shared producer, a customer's
-     * message could wait behind them. A producer has exactly one network thread, so separating the work
-     * means separate producers.
+     * confirmation, so they get their own producer (separate buffer, network thread and connection). The relay
+     * publishes in bursts of up to 1,000 messages; on a shared producer, a customer's message could wait behind
+     * them. A producer has exactly one network thread, so separating the work means separate producers.
+     * Its batching and compression can be changed between runs; see {@link org.example.backend.messaging.IntakeProducer}.
      */
     @Bean
-    KafkaTemplate<String, String> intakeKafkaTemplate(ProducerFactory<String, String> producerFactory) {
-        // The overrides make Spring create a copy of the producer factory, and so a second producer,
-        // which this template closes on shutdown.
-        return new KafkaTemplate<>(producerFactory, Map.of(ProducerConfig.CLIENT_ID_CONFIG, "backend-intake"));
+    KafkaTemplate<String, String> intakeKafkaTemplate(org.example.backend.messaging.IntakeProducer intake) {
+        return intake.template();
     }
 
     /**

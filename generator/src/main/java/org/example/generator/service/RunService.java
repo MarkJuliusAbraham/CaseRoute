@@ -33,7 +33,7 @@ public class RunService {
     }
 
     public synchronized LoadRun start(RunSettings settings) throws IOException {
-        if (current != null && (current.active() || current.resending()))
+        if (current != null && (current.active() || current.retrying()))
             throw new ResponseStatusException(HttpStatus.CONFLICT, "A run is already active");
         UUID id = UUID.randomUUID();
         // Nothing is planned up front: submissions are built from their sequence number as they are sent.

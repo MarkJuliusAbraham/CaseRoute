@@ -9,6 +9,8 @@ const report = {
     rejectedButSaved: 0,
     blocked: { total: 4, saved: 0 },
     unexpected: 0,
+    casesInDatabase: 101,
+    duplicates: { requestsSent: 10, requestsAccepted: 10, casesCreatedTwice: 0, processedMoreThanOnce: 0 },
 };
 
 test('rows cover accepted, unknown and impossible outcomes in order', () => {
@@ -16,9 +18,19 @@ test('rows cover accepted, unknown and impossible outcomes in order', () => {
     assert.deepEqual(rows.map(([label]) => label), [
         'Accepted replies', 'Saved and processed', 'Saved, awaiting processing', 'Accepted but missing',
         'Outcome unknown', 'Unknown, saved anyway', 'Unknown, never arrived', 'Blocked (backend busy)', 'Blocked but saved',
-        'Rejected but saved', 'Unexpected cases',
+        'Rejected but saved', 'Unexpected cases', 'Cases in the database',
+        'Repeated submissions sent', 'Cases created twice', 'Processed more than once',
     ]);
-    assert.deepEqual(rows.map(([, value]) => value), [100, 97, 1, 2, 5, 3, 2, 4, 0, 0, 0]);
+    assert.deepEqual(rows.map(([, value]) => value), [100, 97, 1, 2, 5, 3, 2, 4, 0, 0, 0, 101, 10, 0, 0]);
+});
+
+test('duplicates: extra cases and double processing are problems; an older backend shows a dash', () => {
+    const rows = new Map(checkRows({ ...report, duplicates: { requestsSent: 10, requestsAccepted: 10, casesCreatedTwice: 1, processedMoreThanOnce: -1 } })
+        .map(([label, value, tone]) => [label, [value, tone]]));
+    assert.deepEqual(rows.get('Cases created twice'), [1, 'problem']);
+    assert.deepEqual(rows.get('Processed more than once'), ['—', '']);
+    assert.equal(checkRows({ ...report, duplicates: undefined }).some(([label]) => label === 'Cases created twice'), false,
+        'reports from before the check have no duplicate rows');
 });
 
 test('only counts that should be zero are flagged, and only when they are not', () => {

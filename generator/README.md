@@ -92,7 +92,7 @@ on that lock while requests timed out before reaching the backend. Every submiss
 Each run picks `httpClient`: `JDK` (the built-in client above) or `JETTY` (the default), Jetty's HttpClient spread over
 `generator.jetty.clients` (8) instances, chosen by clientRequestId. Together they open at most
 `generator.jetty.max-connections` (2,000) connections to the backend and queue at most `generator.jetty.max-queued`
-(10,000) requests; both limits are split evenly across the instances, and each has `generator.jetty.selectors` (1)
+(40,000) requests; both limits are split evenly across the instances, and each has `generator.jetty.selectors` (1)
 network threads. Extra requests wait instead of opening new connections, which avoids the connection bursts that
 collapse the JDK client near 10,000 requests/s. With a single Jetty instance, a backlog left 192 of its 200 worker
 threads queued on its one waiting-line lock; separate instances have separate lines and locks.
@@ -117,8 +117,10 @@ Jetty is set up so that nothing about its connections depends on how long a run 
     and about 2,750 requests were refused by the backend's accept queue.
 - **Jetty's default pool** reuses open connections first. An earlier round-robin pool was the largest CPU cost in a
   profile of a 1M/min connection test (24.8% of samples spent choosing a connection).
-- **A short waiting line** (`max-queued`, 10,000: about 1 s of work at ~15,000/s). A request that finds it full is
-  **SKIPPED**: never sent, so nothing can have been stored. With 100,000, waits grew until requests hit the 15 s
+- **A waiting line sized by time** (`max-queued`, 40,000: about 4 s of work at ~10,000/s, far below the 15 s request
+  timeout). A request that finds it full is **SKIPPED**: never sent, so nothing can have been stored. 10,000 (~1 s)
+  was too short: every brief stall, such as the warm-up-to-run switch or a GC pause, became skips even at 500k/min.
+  With 100,000, waits grew until requests hit the 15 s
   timeout; on HTTP/1.1 a timed-out request closes its connection, a new one is opened, and the old port stays
   reserved for 2 minutes (TIME_WAIT). That builds up until Windows' 16,384 ports run out (`WSAENOBUFS`, "No buffer
   space available"), which is why overloaded runs got worse over time instead of leveling off. A retry that finds
@@ -151,23 +153,75 @@ already open, both JVMs have compiled the request path, and the backend's Kafka 
 
 A `503` **with** a `Retry-After` header comes from the backend's load shedding: it turned the submission away before
 doing anything, so nothing was stored. Such submissions are counted as `BLOCKED` (the snapshot's `blocked`), not
-UNKNOWN, and are never retried automatically, so a run stays exactly its set length. After the run,
-`POST /api/runs/{id}/resend-blocked` resends every still-blocked submission at the run's rate with its original
-clientRequestId (state `RESENDING`; progress in the snapshot's `resend` field and the event stream). New outcomes
-replace BLOCKED in the run's counts; a summary is written to `reports/<runId>.resend-<n>.json`. The checker reports
-blocked submissions separately; "blocked but saved" must be 0.
+UNKNOWN, and are never retried during the run, so a run stays exactly its set length. The retry period after the
+run sends them again (below). The checker reports blocked submissions separately; "blocked but saved" must be 0.
+
+## When the backend is unreachable
+
+A refused connection (`ConnectException`) means the request never reached the backend: it is **SKIPPED** with the
+detail "Connection refused: backend not reachable; not sent", and the retry period can resend it. A connection that
+breaks mid-request, or a timeout, stays **UNKNOWN**.
+
+`circuitBreaker` (on by default, `CircuitBreaker`): after 20 replies in a row without any HTTP status, the generator
+stops sending for 1 s (doubling up to 10 s while the backend stays away), then sends one probe. When the probe gets any
+HTTP reply, the share of submissions sent ramps from 0 to 100% over 5 s. Any HTTP reply, even an error, resets the
+count. Submissions due while paused or ramping are skipped with the reason; the schedule itself never stops. The
+snapshot's `circuit` reports the state, since when, how often it opened and how many submissions it held back.
+Duplicate sends are skipped while it is not closed.
+
+## Duplicate submissions
+
+`duplicatePercent` (0 to 50, default 0) sends that share of submissions a second time, with the same clientRequestId and
+content, 0 to 2 s after the first: sometimes while the first is still in flight, sometimes after it was accepted, like
+a customer double-clicking or resubmitting. Which ones is decided from the sequence number alone
+(`Submission.isDuplicated`), so no list is kept. Repeats are extra traffic: the submission's outcome is still its first
+send's, and the snapshot's `duplicates` counts repeats sent, accepted (the backend acknowledged the repeat) and other.
+Submissions skipped at the in-flight cap are not repeated. The checker then verifies that each submission has one case
+and that no case was processed twice.
+
+## Retry period
+
+A layer after the run, separate from the in-run retries above: every submission without a definite answer is sent
+again with its original clientRequestId.
+
+| Outcome | Retried | Why |
+|---|---|---|
+| SKIPPED | yes | Never sent (in-flight cap or the HTTP client's waiting line was full): nothing stored. |
+| BLOCKED | yes | The backend said busy, nothing stored, retry later. |
+| UNKNOWN | yes | May or may not be stored; resending is safe because the backend ignores an id it already has. |
+| REJECTED / MISMATCH (FAILED) | no | A definite answer: the same request gets the same answer. |
+| Not sent | no | The run was stopped on purpose. |
+
+With `retryPeriod: true` it starts by itself after a run that finishes on its own (not after Stop or an error);
+`POST /api/runs/{id}/retry?seconds=N` starts one by hand (`/resend-blocked` is the older name). It sends at the run's
+rate, waiting for in-flight slots instead of skipping, in passes: each pass covers whatever is still Skipped, Blocked
+or Unknown, and passes are 1 s, 2 s, 4 s ... (at most 30 s) apart. It ends at the first of: nothing left, the time
+limit (`retryPeriodSeconds`, default 120, or `seconds`), 10 passes, a pass that resolves nothing (no accepted or
+rejected outcomes: the backend may be down), or Stop. The state is `RETRYING` meanwhile and no new run can start.
+New outcomes replace the old ones in the run's counts, so the checker sees the final state; the snapshot's `retry`
+field holds each pass (planned, sent, accepted, skipped, blocked, unknown, failed), `recovered`, and the `reason` it
+ended. A summary is written to `reports/<runId>.retry-<n>.json`. It is not part of the run's measured time: the
+run's report and per-second lines end with the run.
 
 ## Checker
 
 `POST /api/runs/{id}/check` (after the run ends) reconciles the run: it streams the backend's ledger
-(`GET /api/simulation/cases/ledger?testRunId=`, one `clientRequestId,status` line per saved case) and compares it
+(`GET /api/simulation/cases/ledger?testRunId=`, one `clientRequestId,status,resultsReceived` line per saved case) and compares it
 with the generator's final outcome for every submission. `GET /api/runs/{id}/check` returns the latest result,
 which is also written to `reports/<runId>.check.json`.
 
 - Accepted: processed, awaiting processing (OPEN), or **missing** (no case: lost, or still in Kafka if checked early).
 - Unknown: saved anyway (only the reply was lost) or never arrived.
 - Rejected but saved, unexpected (never sent or never planned): should always be 0.
+- Duplicates: **cases created twice** (a second ledger row for one clientRequestId) and **processed more than once**
+  (cases, of all in the run, with more than one processing result): both should be 0. A second row is not counted
+  again as a processed submission. "Processed more than once" is -1 against a backend whose ledger has no
+  `resultsReceived` column.
 - Verdict: `CONSISTENT`, `PENDING` (only OPEN cases remain) or `DISCREPANCIES`.
+- The ledger must end with `#end,<rows>` and that count must match the rows read; otherwise the check fails with 502
+  ("ended early") and concludes nothing. A streamed download that stops early looks like a normal reply, and the
+  backend once cut the ledger off after 30 s (its async request timeout, now 10 minutes): every case left out
+  would have been reported as missing.
 
 The dashboard runs it automatically once the pipeline settles after a run.
 

@@ -20,6 +20,17 @@ public record Submission(UUID clientRequestId, UUID testRunId, String subject, S
         return new UUID(runId.getMostSignificantBits(), runId.getLeastSignificantBits() + sequence);
     }
 
+    /**
+     * Whether submission {@code sequence} is also sent a second time, for a run that duplicates {@code percent}% of its
+     * submissions. Decided from the sequence number alone, so the checker can tell which were duplicated without a
+     * list. Spread evenly: any stretch of submissions gets close to {@code percent}%.
+     */
+    public static boolean isDuplicated(long sequence, int percent) {
+        if (percent <= 0 || sequence < 1) return false;
+        long mixed = sequence * 0x9E3779B97F4A7C15L; // Fibonacci hashing: neighbouring numbers land far apart
+        return Math.floorMod(mixed >>> 17, 10_000L) < percent * 100L;
+    }
+
     /** The sequence number of a clientRequestId from this run, or -1 if it did not come from this run's numbering. */
     public static long sequenceOf(UUID runId, UUID clientRequestId) {
         if (clientRequestId.getMostSignificantBits() != runId.getMostSignificantBits()) return -1;

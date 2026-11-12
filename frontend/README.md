@@ -1,7 +1,7 @@
 # CaseRoute frontend
 
-Shared browser controls and visualization, independent of the backend services.
-Currently connected to the generator; processor and checker views will be added when those APIs exist.
+Shared browser controls and visualization: run controls, the pipeline graph, outcomes, the checker, the Kafka
+panel and each service's settings. The Documentation tab describes every part and has an architecture FAQ.
 The UI uses plain JavaScript modules and Vite. No framework is required.
 
 ## Development

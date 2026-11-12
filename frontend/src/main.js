@@ -1,6 +1,6 @@
 import './style.css';
 import { generator } from './api/generator.js';
-import { clearSavedCases } from './api/simulation.js';
+import { clearSavedCases, takeBackendDown } from './api/simulation.js';
 import { Connections } from './connections.js';
 import { HealthHistory } from './health-history.js';
 import { HealthHistoryView } from './health-history-view.js';
@@ -15,6 +15,10 @@ import { PipelineToggle } from './pipeline-control.js';
 import { SheddingControl } from './shedding-control.js';
 import { Hints } from './hints.js';
 import { NodeSettings, LayoutSwitch } from './node-settings.js';
+import { KafkaPanel } from './kafka-panel.js';
+import { canRetry, describeRetry } from './retry-period.js';
+import { ResultsView, totalSent } from './results-view.js';
+import { PRESETS, PRESET_FIELDS, applyPreset } from './run-presets.js';
 
 const views = new ViewSwitcher();
 const hints = new Hints();
@@ -22,6 +26,8 @@ if (import.meta.hot) import.meta.hot.dispose(() => hints.destroy());
 const pipelineToggle = new PipelineToggle(document.getElementById('pipeline-control'));
 if (import.meta.hot) import.meta.hot.dispose(() => pipelineToggle.destroy());
 const shedding = new SheddingControl(document.getElementById('shedding-control'));
+const kafkaPanel = new KafkaPanel(document.getElementById('kafka-card'));
+const results = new ResultsView(document.getElementById('outcomes'));
 if (import.meta.hot) import.meta.hot.dispose(() => shedding.destroy());
 if (import.meta.hot) import.meta.hot.dispose(() => views.destroy());
 
@@ -67,6 +73,8 @@ function updateControls() {
  el('start').disabled = !canStartRun({ generatorLive: services.generator, runKnown, activeRun, starting, resetting: resetBusy });
  el('start').title = !services.generator ? 'Waiting for a live generator connection' : !runKnown ? 'Checking for an existing run' : '';
  el('clear-cases').disabled = resetBusy || activeRun || !runKnown || !services.generator || !services.backend;
+ // Kafka settings apply between runs only; the backend also refuses them while submissions are being sent.
+ kafkaPanel.setLocked(activeRun || starting);
 }
 const connections = new Connections(el('service-connections'), health => {
  services = health;
@@ -106,17 +114,45 @@ function updateCapacityInput() {
  el('use-kafka').disabled = activeRun || starting || el('connection-test').checked;
  el('connection-test').disabled = activeRun || starting;
  el('retry').disabled = activeRun || starting;
+ el('retry-period-field').hidden = !el('retry-period').checked;
  el('duration').disabled = activeRun || starting || el('endless').checked;
 }
 el('unlimited').addEventListener('change', updateCapacityInput);
+// Stress-test presets: fill the settings in one go. Editing any of those settings afterwards marks it as modified.
+{
+ const picker = el('run-preset');
+ const text = document.querySelector('[data-preset-text]');
+ for (const preset of PRESETS) picker.append(new Option(preset.name, preset.id));
+ let applying = false;
+ const describe = (preset, modified) => {
+  text.replaceChildren();
+  if (!preset) return;
+  const purpose = document.createElement('span'); purpose.textContent = preset.purpose + (modified ? ' (modified)' : '');
+  const look = document.createElement('span'); look.className = 'preset-look'; look.textContent = 'Look for: ' + preset.lookFor;
+  text.append(purpose, look);
+ };
+ picker.addEventListener('change', () => {
+  const preset = PRESETS.find(p => p.id === picker.value);
+  if (preset) { applying = true; applyPreset(preset, el); applying = false; }
+  describe(preset, false);
+ });
+ for (const id of PRESET_FIELDS) for (const type of ['input', 'change']) el(id)?.addEventListener(type, () => {
+  if (applying) return;
+  const preset = PRESETS.find(p => p.id === picker.value);
+  if (preset) describe(preset, true);
+ });
+}
+el('retry-period').addEventListener('change', updateCapacityInput);
 updateCapacityInput();
 estimate();
 function render(run) {
- traffic.update(run);
+ // The graph's "requests sent" includes the retry period's sends, not only the run's.
+ traffic.update({ ...run, dispatched: totalSent(run) });
+ results.render(run);
  savedCases.track(run);
  checker.setRun(run);
- // A resend pass after the run also keeps the generator busy.
- runKnown = true; activeRun = run.finishedAt == null || run.state === 'RESENDING'; updateControls();
+ // A retry period after the run also keeps the generator busy.
+ runKnown = true; activeRun = run.finishedAt == null || run.state === 'RETRYING'; updateControls();
  activeId=run.runId;
  caseReport.setRunId(run.runId);
  el('state').textContent=run.state;
@@ -124,23 +160,11 @@ function render(run) {
  const retries = run.settings.retryEnabled ? 'retries on' : 'retries off';
  const httpClient = run.settings.httpClient === 'JETTY' ? 'Jetty client' : 'Java client';
  const length = run.settings.endless ? 'until stopped' : `${run.settings.durationMinutes} min`;
- el('run-id').textContent=`Run ${run.runId} · ${length} · ${mode} · ${retries} · ${httpClient}`;
- for(const key of ['dispatched','accepted','failed','unknown','skipped','inFlight','retried','recovered','blocked'])el(key).textContent=(run[key] ?? 0).toLocaleString();
- const accounted=run.accepted+run.failed+run.unknown+run.skipped+run.notSent;
- for(const key of ['connectionsOpen','connectionsOpened','connectionsClosed'])el(key).textContent=run.settings.httpClient==='JETTY'?(run[key] ?? 0).toLocaleString():'—';
- // An endless run has no end to measure progress against: the bar shows activity only.
- if(run.settings.endless&&!terminal(run.state)){el('progress').removeAttribute('value');}
- else{el('progress').max=Math.max(1,run.planned);el('progress').value=accounted;}
- el('progress-label').textContent = run.state === 'WARMING_UP'
-  ? `Warming up: ${(run.warmupSent ?? 0).toLocaleString()} of ${(run.warmupPlanned ?? 0).toLocaleString()} warm-up requests sent (not stored)`
-  : (run.settings.endless ? `${accounted.toLocaleString()} submissions accounted for · runs until stopped`
-     : `${accounted.toLocaleString()} of ${run.planned.toLocaleString()} scheduled submissions accounted for`)
-   + (run.warmupSent ? ` · warm-up: ${run.warmupSent.toLocaleString()} sent, ${run.warmupFailed.toLocaleString()} failed` : '');
- el('not-sent').textContent=run.notSent?`${run.notSent.toLocaleString()} submissions were not sent before the run stopped.`:'';
- const r = run.resend;
- el('resend-status').textContent = !r ? (run.blocked ? `${run.blocked.toLocaleString()} submissions were blocked (backend busy, nothing stored). Resend them after the run.` : '')
-  : `Resend pass ${r.pass} ${r.state === 'RESENDING' ? 'in progress' : r.state.toLowerCase()}: ${r.sent.toLocaleString()} of ${r.planned.toLocaleString()} sent, ${r.accepted.toLocaleString()} accepted, ${r.blocked.toLocaleString()} blocked again, ${(r.unknown + r.failed).toLocaleString()} other.`;
- el('resend-blocked').disabled = run.finishedAt == null || run.state === 'RESENDING' || !run.blocked;
+ const period = (run.settings.retryPeriod ? ` · retry period ${run.settings.retryPeriodSeconds} s` : '')
+  + (run.settings.duplicatePercent ? ` · ${run.settings.duplicatePercent}% sent twice` : '');
+ el('run-id').textContent=`Run ${run.runId} · ${length} · ${mode} · ${retries}${period} · ${httpClient}`;
+ el('retry-status').textContent = describeRetry(run);
+ el('retry-now').disabled = !canRetry(run);
  const finished=terminal(run.state);
  updateControls();el('stop').disabled=finished||run.state==='DRAINING';
  for(const input of el('run-form').querySelectorAll('input, select, button:not(.hint)'))input.disabled=!finished;
@@ -172,12 +196,29 @@ el('run-form').addEventListener('submit',async event=>{
  settings.retryEnabled = el('retry').checked;
  settings.httpClient = el('http-client').value;
  settings.endless = el('endless').checked;
+ settings.retryPeriod = el('retry-period').checked;
+ settings.retryPeriodSeconds = Number(el('retry-period-seconds').value) || 120;
+ settings.duplicatePercent = Math.max(0, Math.min(50, Math.round(Number(el('duplicates').value) || 0)));
+ settings.circuitBreaker = el('circuit-breaker').checked;
  settings.durationMinutes = Number(el('duration').value) || 1; // sent even when disabled (endless) for validation
  try{const run=await generator.start(settings);render(run);subscribe(run.runId);}
  catch(error){showError(error.message);await refreshCurrentRun();}
  finally { starting=false;updateControls();updateCapacityInput(); }
 });
-el('resend-blocked').addEventListener('click',async()=>{el('resend-blocked').disabled=true;showError('');try{const run=await generator.resendBlocked(activeId);render(run);subscribe(run.runId);}catch(error){showError(error.message);}});
+el('retry-now').addEventListener('click',async()=>{el('retry-now').disabled=true;showError('');try{const run=await generator.retry(activeId, Number(el('retry-period-seconds').value) || 120);render(run);subscribe(run.runId);}catch(error){showError(error.message);}});
+// Downtime test: confirm, then ask the backend to stop gracefully or crash. Restarting it is done by hand.
+for (const button of document.querySelectorAll('[data-downtime]')) button.addEventListener('click', async () => {
+ const mode = button.dataset.downtime;
+ const status = document.querySelector('[data-downtime-status]');
+ const question = mode === 'crash'
+  ? 'Crash the backend now? It exits instantly: requests in progress get no reply. Restart it from IntelliJ afterwards.'
+  : 'Stop the backend gracefully? It finishes requests in progress, then exits. Restart it from IntelliJ afterwards.';
+ if (!window.confirm(question)) return;
+ try {
+  await takeBackendDown(mode);
+  status.textContent = `${mode === 'crash' ? 'Crashed' : 'Stopping gracefully'} at ${new Date().toLocaleTimeString()}. Restart the backend from IntelliJ; its badge turns green when it is back.`;
+ } catch (error) { status.textContent = error.message; }
+});
 el('stop').addEventListener('click',async()=>{el('stop').disabled=true;try{render(await generator.stop(activeId));}catch(error){showError(error.message);el('stop').disabled=false;}});
 async function refreshCurrentRun() {
  try {

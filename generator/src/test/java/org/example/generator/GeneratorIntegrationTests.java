@@ -44,6 +44,20 @@ class GeneratorIntegrationTests {
     /** When set, the target sheds load: 503 + Retry-After, nothing stored. */
     private static final java.util.concurrent.atomic.AtomicBoolean shedding = new java.util.concurrent.atomic.AtomicBoolean();
     private static final java.util.Map<String, Integer> paths = new java.util.concurrent.ConcurrentHashMap<>();
+    /** When set, the fake ledger reports results received per case (third column), like the current backend. */
+    private static final java.util.concurrent.atomic.AtomicBoolean ledgerReportsResults = new java.util.concurrent.atomic.AtomicBoolean();
+    /** Ids the fake ledger lists twice (a case created twice), and ids it reports as processed twice. */
+    private static final java.util.Set<String> createdTwice = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.Set<String> processedTwice = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** When set, the fake ledger stops early: no end line, as when a streamed download is cut off. */
+    private static final java.util.concurrent.atomic.AtomicBoolean ledgerCutOff = new java.util.concurrent.atomic.AtomicBoolean();
+    static {
+        // The stand-in backend is Java's built-in HTTP server, which keeps at most 200 idle connections and closes
+        // the rest. A warm-up pre-opens the generator's whole pool (2,000), and a request sent on one of the closed
+        // connections came back UNKNOWN now and then. The real backend (Tomcat) never closes them; neither should this.
+        System.setProperty("sun.net.httpserver.maxIdleConnections", "5000");
+        System.setProperty("sun.net.httpserver.idleInterval", "3600");
+    }
     private static final HttpServer TARGET = startTarget();
     @LocalServerPort int port;
     @Autowired RunService runs;
@@ -95,8 +109,13 @@ class GeneratorIntegrationTests {
             });
             server.createContext("/api/simulation/cases/ledger", exchange -> {
                 var out = new StringBuilder();
-                received.keySet().stream().filter(id -> !lost.contains(id))
-                        .forEach(id -> out.append(id).append(",ROUTED").append((char) 10));
+                received.keySet().stream().filter(id -> !lost.contains(id)).forEach(id -> {
+                    String results = ledgerReportsResults.get() ? (processedTwice.contains(id) ? ",2" : ",1") : "";
+                    out.append(id).append(",ROUTED").append(results).append((char) 10);
+                    if (createdTwice.contains(id)) out.append(id).append(",ROUTED").append(results).append((char) 10);
+                });
+                long rows = out.chars().filter(c -> c == 10).count();
+                if (!ledgerCutOff.get()) out.append("#end,").append(rows).append((char) 10);
                 byte[] body = out.toString().getBytes();
                 exchange.sendResponseHeaders(200, body.length);
                 exchange.getResponseBody().write(body);
@@ -121,6 +140,7 @@ class GeneratorIntegrationTests {
         LoadRun run = runs.current();
         if (run != null) { run.stop(); await(() -> !run.active()); }
         delay.set(0); responseStatus.set(-1); failFirstAttempts.set(0); lost.clear(); received.clear(); warmups.set(0); paths.clear(); shedding.set(false);
+        ledgerReportsResults.set(false); createdTwice.clear(); processedTwice.clear(); ledgerCutOff.set(false);
     }
 
     @Test void publicControlsStartStreamStopAndDownloadManifest() throws Exception {
@@ -388,16 +408,18 @@ class GeneratorIntegrationTests {
         assertEquals(0, check.path("blocked").path("saved").asLong());
 
         shedding.set(false);
-        assertEquals(200, post("/api/runs/" + run.id() + "/resend-blocked", "").statusCode());
-        await(() -> run.snapshot().resend() != null && run.snapshot().resend().finishedAt() != null);
+        assertEquals(200, post("/api/runs/" + run.id() + "/resend-blocked", "").statusCode(), "the older name still works");
+        await(() -> run.snapshot().retry() != null && run.snapshot().retry().finishedAt() != null);
         var after = run.snapshot();
         assertEquals(0, after.blocked());
-        assertEquals(s.accepted() + blocked, after.accepted(), "every blocked submission was accepted on resend");
-        assertEquals(blocked, after.resend().accepted());
-        assertEquals("STOPPED", after.state(), "the run's own state is restored after the pass");
+        assertEquals(s.accepted() + blocked, after.accepted(), "every blocked submission was accepted on retry");
+        assertEquals(blocked, after.retry().recovered());
+        assertEquals("Nothing left to retry", after.retry().reason());
+        assertEquals("STOPPED", after.state(), "the run's own state is restored after the retry period");
         assertEquals(blocked, received.size(), "each resent once, with its original clientRequestId");
-        assertTrue(Files.exists(reports.resolve(run.id() + ".resend-1.json")));
-        assertEquals(409, post("/api/runs/" + run.id() + "/resend-blocked", "").statusCode(), "nothing left to resend");
+        // The summary file is written just after the retry period reports itself finished.
+        await(() -> Files.exists(reports.resolve(run.id() + ".retry-1.json")));
+        assertEquals(409, post("/api/runs/" + run.id() + "/retry", "").statusCode(), "nothing left to retry");
     }
 
     @Test void jettyClientRunsWarmUpAndSubmissionsWithTheSameOutcomes() throws Exception {
@@ -493,6 +515,135 @@ class GeneratorIntegrationTests {
         assertTrue(s.connectionsOpen() >= 1, "connections are counted");
         assertTrue(s.connectionsOpened() < s.accepted() / 5,
                 "connections are reused: " + s.connectionsOpened() + " opened for " + s.accepted() + " accepted");
+    }
+
+    private static RunSettings withRetryPeriod(int rpm, Integer maxInFlight, int seconds) {
+        return new RunSettings(rpm, 1, maxInFlight, org.example.generator.model.SubmissionMode.KAFKA, false, 0,
+                org.example.generator.model.HttpClientKind.JETTY, false, true, seconds);
+    }
+
+    @Test void retryPeriodStartsAfterACompletedRunAndResolvesUnknownOutcomes() throws Exception {
+        failFirstAttempts.set(1); // the first attempt gets a 503 without Retry-After: outcome unknown
+        LoadRun run = runs.start(withRetryPeriod(1, null, 60)); // 1 per minute for 1 minute: a single submission
+        await(() -> run.snapshot().retry() != null && run.snapshot().retry().finishedAt() != null);
+        var s = run.snapshot();
+        assertEquals("COMPLETED", s.state());
+        assertEquals(1, s.accepted()); assertEquals(0, s.unknown());
+        assertEquals(1, s.retry().recovered());
+        assertEquals(1, s.retry().passes().getFirst().accepted());
+        assertEquals("DONE", s.retry().state());
+        assertEquals(2, received.values().iterator().next(), "one id, two attempts: the run's and the retry's");
+    }
+
+    @Test void retryPeriodEndsWhenAPassResolvesNothing() throws Exception {
+        responseStatus.set(503); // every attempt: outcome unknown
+        LoadRun run = runs.start(withRetryPeriod(1, null, 60));
+        await(() -> run.snapshot().retry() != null && run.snapshot().retry().finishedAt() != null);
+        var s = run.snapshot();
+        assertEquals(1, s.unknown());
+        assertEquals(1, s.retry().passes().size(), "gave up after one pass that changed nothing");
+        assertTrue(s.retry().reason().startsWith("A pass resolved nothing"), s.retry().reason());
+    }
+
+    @Test void retryPeriodIsOffByDefaultAndSkippedSubmissionsCanBeRetriedByHand() throws Exception {
+        delay.set(200);
+        LoadRun run = runs.start(new RunSettings(6000, 1, 1)); // at most 1 in flight: most are skipped
+        await(() -> run.snapshot().skipped() >= 5);
+        run.stop(); await(() -> !run.active());
+        long skipped = run.snapshot().skipped();
+        assertNull(run.snapshot().retry(), "no automatic retry period unless turned on");
+        delay.set(0);
+        assertEquals(200, post("/api/runs/" + run.id() + "/retry?seconds=30", "").statusCode());
+        assertEquals("RETRYING", run.snapshot().state());
+        await(() -> run.snapshot().retry().finishedAt() != null);
+        var s = run.snapshot();
+        assertEquals(0, s.skipped(), "every skipped submission was sent and accepted");
+        assertEquals(skipped, s.retry().recovered());
+        assertEquals(s.dispatched() + skipped, s.accepted(), "accepted = sent in the run + recovered by the retry period");
+    }
+
+    @Test void stoppingEndsARetryPeriod() throws Exception {
+        responseStatus.set(503);
+        delay.set(300);
+        LoadRun run = runs.start(new RunSettings(6000, 1, null));
+        await(() -> run.snapshot().unknown() >= 10);
+        run.stop(); await(() -> !run.active());
+        assertEquals(200, post("/api/runs/" + run.id() + "/retry", "").statusCode());
+        assertEquals(409, post("/api/runs", "{\"requestsPerMinute\":60,\"durationMinutes\":1}").statusCode(),
+                "no new run while retrying");
+        assertEquals(200, post("/api/runs/" + run.id() + "/stop", "").statusCode());
+        await(() -> run.snapshot().retry().finishedAt() != null);
+        assertEquals("STOPPED", run.snapshot().retry().state());
+        assertEquals("STOPPED", run.snapshot().state());
+    }
+
+    @Test void duplicateSelectionIsSpreadEvenlyAndRepeatable() {
+        long chosen = java.util.stream.LongStream.rangeClosed(1, 100_000)
+                .filter(n -> org.example.generator.model.Submission.isDuplicated(n, 10)).count();
+        assertTrue(chosen > 9_500 && chosen < 10_500, "about 10%: " + chosen);
+        assertEquals(org.example.generator.model.Submission.isDuplicated(4242, 10), org.example.generator.model.Submission.isDuplicated(4242, 10));
+        assertFalse(org.example.generator.model.Submission.isDuplicated(4242, 0));
+    }
+
+    @Test void duplicatesAreSentAgainWithTheSameIdAndTheCheckerConfirmsOneCaseEach() throws Exception {
+        ledgerReportsResults.set(true);
+        var settings = new RunSettings(6000, 1, null, org.example.generator.model.SubmissionMode.KAFKA, false, 0,
+                org.example.generator.model.HttpClientKind.JETTY, false, false, 120, 50);
+        LoadRun run = runs.start(settings);
+        await(() -> run.snapshot().accepted() >= 40);
+        run.stop(); await(() -> !run.active());
+        var s = run.snapshot();
+        assertEquals(50, s.settings().duplicatePercent());
+        assertTrue(s.duplicates().sent() >= 5, "about half were sent twice: " + s.duplicates());
+        assertEquals(s.duplicates().sent(), s.duplicates().accepted(), "the backend acknowledges the repeat too");
+        long twice = received.values().stream().filter(n -> n == 2).count();
+        assertEquals(s.duplicates().sent(), twice, "each repeat used its submission's own clientRequestId");
+        assertEquals(s.accepted(), received.size(), "outcomes still count submissions, not requests");
+
+        var check = JSON.readTree(post("/api/runs/" + run.id() + "/check", "").body());
+        assertEquals("CONSISTENT", check.path("verdict").asText());
+        assertEquals(s.duplicates().sent(), check.path("duplicates").path("requestsSent").asLong());
+        assertEquals(0, check.path("duplicates").path("casesCreatedTwice").asLong());
+        assertEquals(0, check.path("duplicates").path("processedMoreThanOnce").asLong());
+        assertEquals(s.accepted(), check.path("casesInDatabase").asLong(), "one case per submission, however often it was sent");
+    }
+
+    @Test void checkerFlagsACaseCreatedTwiceOrProcessedTwice() throws Exception {
+        ledgerReportsResults.set(true);
+        LoadRun run = runs.start(new RunSettings(600, 1, null));
+        await(() -> run.snapshot().accepted() >= 3);
+        run.stop(); await(() -> !run.active());
+        var ids = new java.util.ArrayList<>(received.keySet());
+        createdTwice.add(ids.get(0));
+        processedTwice.add(ids.get(1));
+        var check = JSON.readTree(post("/api/runs/" + run.id() + "/check", "").body());
+        assertEquals("DISCREPANCIES", check.path("verdict").asText());
+        assertEquals(1, check.path("duplicates").path("casesCreatedTwice").asLong());
+        assertEquals(1, check.path("duplicates").path("processedMoreThanOnce").asLong());
+        assertEquals(ids.get(0), check.path("examples").path("createdTwice").get(0).asText());
+        assertEquals(run.snapshot().accepted(), check.path("accepted").path("processed").asLong(),
+                "the extra row is not counted as another processed submission");
+    }
+
+    @Test void aLedgerThatStopsEarlyIsRefusedInsteadOfReportingCasesAsMissing() throws Exception {
+        LoadRun run = runs.start(new RunSettings(600, 1, null));
+        await(() -> run.snapshot().accepted() >= 3);
+        run.stop(); await(() -> !run.active());
+        ledgerCutOff.set(true);
+        var refused = post("/api/runs/" + run.id() + "/check", "");
+        assertEquals(502, refused.statusCode());
+        assertTrue(refused.body().contains("ended early") || refused.body().contains("Bad Gateway"), refused.body());
+        ledgerCutOff.set(false);
+        assertEquals("CONSISTENT", JSON.readTree(post("/api/runs/" + run.id() + "/check", "").body()).path("verdict").asText());
+    }
+
+    @Test void olderBackendsWithoutResultCountsAreReportedAsNotChecked() throws Exception {
+        LoadRun run = runs.start(new RunSettings(600, 1, null));
+        await(() -> run.snapshot().accepted() >= 2);
+        run.stop(); await(() -> !run.active());
+        var check = JSON.readTree(post("/api/runs/" + run.id() + "/check", "").body());
+        assertEquals(-1, check.path("duplicates").path("processedMoreThanOnce").asLong());
+        assertEquals("CONSISTENT", check.path("verdict").asText());
     }
 
     private URI url(String path) { return URI.create("http://localhost:" + port + path); }

@@ -15,8 +15,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class BackendApplicationTests {
     @Autowired WebServerApplicationContext context;
 
+    @Autowired org.springframework.core.env.Environment environment;
+
     @Test
     void contextLoads() {
+    }
+
+    /** A normal stop lets requests in progress finish and reply, so a planned restart leaves none in doubt. */
+    @Test
+    void shutdownIsGraceful() {
+        assertEquals("graceful", environment.getProperty("server.shutdown"));
+        assertEquals("20s", environment.getProperty("spring.lifecycle.timeout-per-shutdown-phase"));
     }
 
     /** The generator keeps a fixed pool of connections, so Tomcat must never close one for being idle. */

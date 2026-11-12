@@ -23,21 +23,34 @@ public class CaseStatsService {
     }
 
     /**
-     * The run's ledger for the checker: one {@code clientRequestId,status} line per saved case, streamed so
-     * a million-case run never sits in memory.
+     * The run's ledger for the checker: one {@code clientRequestId,status,resultsReceived} line per saved case,
+     * streamed so a million-case run never sits in memory. {@code resultsReceived} is how many processing results
+     * arrived for the case (0 while unprocessed); more than 1 means it was processed more than once.
+     *
+     * <p>The last line is {@code #end,<rows>}. A streamed response that stops early still looks like a normal reply,
+     * so the checker accepts a ledger only when this line is there and the count matches.
      */
     @Transactional(readOnly = true)
     public void writeLedger(UUID testRunId, Writer out) {
-        streaming.query("SELECT client_request_id, status FROM cases WHERE test_run_id = ?", rs -> {
+        long[] rows = { 0 };
+        streaming.query("SELECT client_request_id, status, COALESCE(results_received, 0) FROM cases WHERE test_run_id = ?", rs -> {
             try {
                 out.write(rs.getString(1));
                 out.write(',');
                 out.write(rs.getString(2));
+                out.write(',');
+                out.write(Integer.toString(rs.getInt(3)));
                 out.write('\n');
+                rows[0]++;
             } catch (IOException ex) {
                 throw new UncheckedIOException(ex);
             }
         }, testRunId);
+        try {
+            out.write("#end," + rows[0] + "\n");
+        } catch (IOException ex) {
+            throw new UncheckedIOException(ex);
+        }
     }
 
     public CaseStats stats(UUID testRunId) {
