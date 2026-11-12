@@ -62,27 +62,95 @@ New case submissions require a UUID `clientRequestId`; restart the backend after
 
 ## Local management UIs
 
-Start Kafka, Kafbat UI, and pgAdmin from the repository root:
+Two browser tools run in Docker next to Kafka and PostgreSQL. They are part of the Compose stack, listen only on this
+machine, and use local development credentials. To start or stop just them:
 
 ```powershell
-docker compose up -d kafka kafka-ui pgadmin
+docker compose up -d kafka-ui pgadmin
+docker compose stop kafka-ui pgadmin
 ```
 
-- Kafka UI: http://localhost:8082 (CaseRoute cluster preconfigured).
-- pgAdmin: http://localhost:5050. Web login: `admin@caseroute.dev` / `localdev`.
-- PostgreSQL is pre-registered as CaseRoute PostgreSQL in pgAdmin. When connecting,
-  its database username is `caseroutedb` and password is `localdev`.
+| Tool | Address | Login |
+|---|---|---|
+| Kafka UI (Kafbat) | http://localhost:8082 | none |
+| pgAdmin | http://localhost:5050 | web login `admin@caseroute.dev` / `localdev`; database password `localdev` |
 
-These are local development credentials. The UIs bind only to loopback.
-The pgAdmin web account is separate from the PostgreSQL database account.
-Its account/settings persist in `pgadmin_data`; changing the initial login environment
-variables later does not reset an existing account.
+### Kafka UI: what is waiting in Kafka
 
-Kafka has two client addresses: local Java/CLI clients use `localhost:9092`;
-Docker services such as Kafka UI use `kafka:29092`. pgAdmin connects to `postgres:5432`
-inside Docker, rather than to its own localhost. Kafka's controller port stays internal.
-The added Kafka listener takes effect when Compose recreates the Kafka container;
-the existing named data volumes remain in use.
+1. Open http://localhost:8082 and pick the **CaseRoute** cluster (one broker).
+2. **Topics**: `cases.submitted`, `cases.saved`, `cases.processed`, `cases.warmup` and the `.DLT` topics, with partition
+   and message counts. Topics starting with `__` are Kafka's own.
+3. Open a topic, then **Messages**: the key is the submission's `clientRequestId` (`cases.submitted`) or the case ID
+   (`cases.saved`, `cases.processed`); the value is the JSON. Use the search box for one key, or seek by timestamp.
+4. **Consumers**: each group's **lag** per partition, the messages not yet read. `case-writer`: submissions not yet
+   saved. `case-processor`: saved cases not yet processed. `case-result-writer`: results not yet recorded. After a run
+   every lag should reach 0; a lag that stays put means that stage is stopped or paused.
+5. The `.DLT` topics hold messages that could not be used (failed cases carry the reason in a header).
+
+Reading is safe during a run. Don't delete topics while the backend or processor runs: they would recreate them with
+1 partition. Partitions are changed from the dashboard's Kafka panel.
+
+### pgAdmin: what is stored
+
+1. Open http://localhost:5050 and log in with `admin@caseroute.dev` / `localdev` (pgAdmin's own account).
+2. **Servers → CaseRoute → CaseRoute PostgreSQL** is pre-registered. Its password is `localdev` (database user
+   `caseroutedb`); tick "Save password".
+3. **Databases → caseroutedb → Schemas → public → Tables**: `cases` and `outbox`. Right-click a table →
+   **View/Edit Data → First 100 Rows**.
+4. Select `caseroutedb`, then **Tools → Query Tool**, type a query and press F5.
+
+Useful queries (run IDs are in the dashboard's run bar):
+
+- Cases of one run, by status (copy the run ID from the run bar):
+
+  ```sql
+  SELECT status, count(*) FROM cases
+  WHERE test_run_id = '<run id>'
+  GROUP BY status;
+  ```
+
+- One submission, by the ID the generator sent:
+
+  ```sql
+  SELECT * FROM cases WHERE client_request_id = '<client request id>';
+  ```
+
+- Cases processed more than once (should be 0):
+
+  ```sql
+  SELECT count(*) FROM cases
+  WHERE test_run_id = '<run id>' AND results_received > 1;
+  ```
+
+- Saved cases still waiting to be handed to processing:
+
+  ```sql
+  SELECT count(*) FROM outbox;
+  ```
+
+- The latest runs and their sizes:
+
+  ```sql
+  SELECT test_run_id, count(*) AS cases, min(created_at) AS first, max(created_at) AS last
+  FROM cases GROUP BY test_run_id ORDER BY last DESC LIMIT 10;
+  ```
+
+Filter by `test_run_id` (indexed) rather than scanning a million-row table during a run. Delete cases with the
+dashboard's **Clear saved cases** (it also clears the outbox), not by hand. `flyway_schema_history` is unused.
+
+### Troubleshooting
+
+- **Kafka UI shows the cluster offline**: Kafka is still starting; reload after a few seconds.
+- **No CaseRoute server in pgAdmin**: the server list (`infrastructure/pgadmin/servers.json`) is imported only on
+  pgAdmin's first start with an empty `pgadmin_data` volume. Add it by hand: host `postgres`, port 5432, database and
+  user `caseroutedb`.
+- **"password authentication failed"**: that's the database password, `localdev`; the web login is separate.
+- **Changed the pgAdmin login in `compose.yaml` and nothing happened**: the account lives in `pgadmin_data` and is
+  created once; remove the volume to start over.
+
+Kafka has two client addresses: local Java/CLI clients use `localhost:9092`; Docker services such as Kafka UI use
+`kafka:29092`. pgAdmin connects to `postgres:5432` inside Docker, rather than to its own localhost. Kafka's controller
+port stays internal.
 
 ## Diagnosing backend stalls
 

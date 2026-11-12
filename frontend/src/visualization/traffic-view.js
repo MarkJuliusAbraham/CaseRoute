@@ -15,8 +15,8 @@ const TRAVEL_MS = 1300;
 const LAYOUTS = {
     wide: {
         nodes: {
-            generator: [0.085, 0.55], backend: [0.33, 0.55], kafka: [0.60, 0.22],
-            database: [0.60, 0.80], processor: [0.895, 0.22],
+            generator: [0.075, 0.56], backend: [0.335, 0.56], kafka: [0.60, 0.22],
+            database: [0.60, 0.80], processor: [0.905, 0.22],
         },
         size: [140, 92], kafkaSize: [176, 124],
     },
@@ -26,10 +26,10 @@ const LAYOUTS = {
             generator: [0.50, 0.08], backend: [0.50, 0.28], kafka: [0.50, 0.53],
             database: [0.76, 0.86], processor: [0.24, 0.86],
         },
-        size: [136, 92], kafkaSize: [160, 122],
+        size: [136, 92], kafkaSize: [184, 122],
         bends: { bypass: -62, toDatabase: -40, relay: 4, toProcessor: 28, results: 4 },
         labelSides: { relay: -1 }, // keep the outbox relay label clear of the writers label
-        labelAt: { relay: .3, results: .72 }, // stagger the two middle labels vertically
+        labelAt: { relay: .55, results: .72 }, // stagger the two middle labels vertically
     },
 };
 
@@ -232,13 +232,46 @@ export class TrafficView {
     // Node rectangles and edge curves for the current canvas size.
     layout() {
         const w = this.width, h = this.height;
-        const spec = w < 640 ? LAYOUTS.narrow : LAYOUTS.wide;
+        // Side by side when the canvas is wide, stacked when it is tall or narrow.
+        const spec = w < 640 || w < h * 1.3 ? LAYOUTS.narrow : LAYOUTS.wide;
+        // On a short canvas the boxes shrink (down to 78%) so the two rows and the labels between them still fit.
+        const scale = spec === LAYOUTS.wide ? Math.max(.78, Math.min(1, (h - 70) / (spec.kafkaSize[1] + spec.size[1] + 40))) : 1;
         const nodes = {};
         for (const [name, [fx, fy]] of Object.entries(spec.nodes)) {
-            const [nw, nh] = name === 'kafka' ? spec.kafkaSize : spec.size;
+            const [bw, bh] = name === 'kafka' ? spec.kafkaSize : spec.size;
+            // Wider boxes when there is room, so captions such as "cases saved · 412 in outbox" fit whole.
+            const nw = Math.round(bw * (spec === LAYOUTS.wide && name !== 'kafka' ? (w >= 1150 ? 1.2 : w >= 820 ? 1.1 : 1) : 1));
+            const nh = Math.round(bh * scale);
             const cx = Math.min(w - nw / 2 - 8, Math.max(nw / 2 + 8, fx * w));
-            const cy = Math.min(h - nh / 2 - 8, Math.max(nh / 2 + 18, fy * h));
+            // 18 px above each box for its status ("Live"), and 6 px below the lowest box.
+            const cy = Math.min(h - nh / 2 - 6, Math.max(nh / 2 + 18, fy * h));
             nodes[name] = { name, cx, cy, x: cx - nw / 2, y: cy - nh / 2, w: nw, h: nh };
+        }
+        // Keep the two middle boxes apart: the writers and outbox relay labels sit between Kafka and PostgreSQL,
+        // the HTTP POST label between Generator and Backend. On a short canvas, PostgreSQL moves down to the edge
+        // and the Generator and Backend row follows it, so no label lands on a box.
+        if (spec === LAYOUTS.narrow) {
+            // Rows from the top: Generator, Backend, Kafka, then Processor and PostgreSQL side by side. The free
+            // height is shared equally between the rows, so boxes never overlap and the labels have room.
+            const fit = Math.max(.7, Math.min(1, (h - 24 - 3 * 40) / (spec.size[1] * 3 + spec.kafkaSize[1])));
+            for (const n of Object.values(nodes)) {
+                const [bw, bh] = n.name === 'kafka' ? spec.kafkaSize : spec.size;
+                n.w = bw; n.h = Math.round(bh * fit); // only the height gives way: the names need the width
+            }
+            const rows = [[nodes.generator], [nodes.backend], [nodes.kafka], [nodes.processor, nodes.database]];
+            const heights = rows.map(row => Math.max(...row.map(n => n.h)));
+            const gap = Math.max(24, (h - 18 - 6 - heights.reduce((a, b) => a + b, 0)) / 3);
+            let top = 18;
+            rows.forEach((row, i) => {
+                for (const n of row) setCenter(n, Math.min(w - n.w / 2 - 8, Math.max(n.w / 2 + 8, n.cx)), top + heights[i] / 2);
+                top += heights[i] + gap;
+            });
+        }
+        if (spec === LAYOUTS.wide) {
+            const k = nodes.kafka, d = nodes.database;
+            const lowest = h - d.h / 2 - 6;
+            if (d.cy - d.h / 2 - (k.cy + k.h / 2) < 40) setCenter(d, d.cx, lowest);
+            for (const n of [nodes.generator, nodes.backend]) setCenter(n, n.cx, Math.min(lowest, Math.max(n.cy, (k.cy + d.cy) / 2 + 8)));
         }
         const edges = {};
         for (const base of EDGES) {
@@ -252,7 +285,10 @@ export class TrafficView {
             const start = boxExit(a, control), end = boxExit(b, control);
             const points = [];
             for (let i = 0; i <= 24; i++) points.push(quadratic(start, control, end, i / 24));
-            edges[edge.id] = { ...edge, start, control, end, points };
+            // A label wider than the gap between two side-by-side boxes would cover them: put it under the boxes.
+            const gap = Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w));
+            const labelBelow = spec === LAYOUTS.wide && edge.bend === 0 && gap < 130 ? Math.max(a.h, b.h) / 2 + 12 : 0;
+            edges[edge.id] = { ...edge, start, control, end, points, labelBelow };
         }
         return { nodes, edges };
     }
@@ -301,7 +337,7 @@ export class TrafficView {
         this.drawNode(nodes.backend, { kind: 'backend', title: 'Backend', count: fmt(accepted),
             caption: kafka ? 'accepted (202)' : 'saved (201)', tone: healthTone(backend) });
         this.drawNode(nodes.database, { kind: 'database', title: 'PostgreSQL', count: fmt(snapshot ? this.saved : 0),
-            caption: outbox ? `cases saved · ${outbox.toLocaleString()} in outbox` : 'cases saved', tone: healthTone(backend) });
+            caption: outbox ? `saved · ${outbox.toLocaleString()} in outbox` : 'cases saved', tone: healthTone(backend) });
         this.drawNode(nodes.processor, { kind: 'processor', title: 'Processor', count: fmt(snapshot ? this.processed : 0),
             caption: failed ? `processed · ${failed.toLocaleString()} failed` : 'cases processed',
             tone: healthTone(this.connections.processor) });
@@ -362,7 +398,8 @@ export class TrafficView {
         const side = edge.labelSide ?? (edge.bend === 0 ? (ny > 0 ? -1 : 1) : Math.sign(edge.bend));
         nx *= side; ny *= side;
         const clearance = Math.abs(nx) * width / 2 + Math.abs(ny) * height / 2 + 5;
-        mid.x += nx * clearance; mid.y += ny * clearance;
+        if (edge.labelBelow) { mid.x = (edge.start.x + edge.end.x) / 2; mid.y = (edge.start.y + edge.end.y) / 2 + edge.labelBelow; }
+        else { mid.x += nx * clearance; mid.y += ny * clearance; }
         // Keep the whole pill inside the canvas.
         mid.x = Math.min(this.width - width / 2 - 2, Math.max(width / 2 + 2, mid.x));
         ctx.globalAlpha = active ? 1 : .55;
@@ -387,29 +424,31 @@ export class TrafficView {
     }
 
     drawNode(node, { kind, title, count, caption, tone }) {
-        const ctx = this.ctx, { x, y, w } = node;
+        const ctx = this.ctx, { x, y, w, h } = node;
+        const k = h / 92; // text positions were designed for a 92 px box
         this.card(node, tone);
-        drawIcon(ctx, kind, x + 14, y + 12, tone.accent);
+        drawIcon(ctx, kind, x + 14, y + 12 * k, tone.accent);
         ctx.textAlign = 'left'; ctx.fillStyle = colors.ink; ctx.font = '600 14px "Segoe UI", sans-serif';
-        ctx.fillText(title, x + 44, y + 28);
-        ctx.fillStyle = tone.accent; ctx.font = `600 ${w < 150 ? 20 : 22}px "Segoe UI", sans-serif`;
-        ctx.fillText(count, x + 14, y + 64);
+        ctx.fillText(fit(ctx, title, w - 54), x + 44, y + 28 * k);
+        ctx.fillStyle = tone.accent; ctx.font = `600 ${Math.round((w < 150 ? 20 : 22) * Math.min(1, k + .05))}px "Segoe UI", sans-serif`;
+        ctx.fillText(fit(ctx, count, w - 24), x + 14, y + 62 * k);
         ctx.fillStyle = colors.muted; ctx.font = '11px "Segoe UI", sans-serif';
-        ctx.fillText(fit(ctx, caption, w - 24), x + 14, y + 82);
+        ctx.fillText(fit(ctx, caption, w - 24), x + 14, y + h - 9);
     }
 
     drawKafka(node, topics) {
-        const ctx = this.ctx, { x, y, w } = node;
+        const ctx = this.ctx, { x, y, w, h } = node;
+        const k = h / 124; // row positions were designed for a 124 px box
         // No status line: nothing health-checks Kafka directly.
         const tone = { accent: colors.processing, surface: colors.kafkaSurface, label: '' };
         this.card(node, tone);
-        drawIcon(ctx, 'kafka', x + 14, y + 12, tone.accent);
+        drawIcon(ctx, 'kafka', x + 14, y + 12 * k, tone.accent);
         ctx.textAlign = 'left'; ctx.fillStyle = colors.ink; ctx.font = '600 14px "Segoe UI", sans-serif';
-        ctx.fillText('Kafka', x + 44, y + 28);
+        ctx.fillText('Kafka', x + 44, y + 28 * k);
         ctx.fillStyle = colors.muted; ctx.font = '11px "Segoe UI", sans-serif'; ctx.textAlign = 'right';
-        ctx.fillText('waiting', x + w - 12, y + 28);
+        ctx.fillText('waiting', x + w - 12, y + 28 * k);
         topics.forEach(([name, value], i) => {
-            const rowY = y + 54 + i * 22;
+            const rowY = y + (54 + i * 22) * k + (1 - k) * 6;
             ctx.strokeStyle = '#d3e2ea'; ctx.lineWidth = 1;
             ctx.beginPath(); ctx.moveTo(x + 12, rowY - 15); ctx.lineTo(x + w - 12, rowY - 15); ctx.stroke();
             ctx.textAlign = 'left'; ctx.fillStyle = colors.ink; ctx.font = '12px Consolas, monospace';
@@ -427,6 +466,10 @@ export class TrafficView {
         this.resizeObserver.disconnect();
         document.removeEventListener('visibilitychange', this.onVisibility);
     }
+}
+
+function setCenter(node, cx, cy) {
+    node.cx = cx; node.cy = cy; node.x = cx - node.w / 2; node.y = cy - node.h / 2;
 }
 
 const NODE_LABELS = { generator: 'Generator', backend: 'Backend', kafka: 'Kafka', database: 'PostgreSQL', processor: 'Processor' };

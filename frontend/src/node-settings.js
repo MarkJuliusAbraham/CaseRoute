@@ -92,7 +92,7 @@ export class LayoutSwitch {
         this.traffic = traffic;
         this.settings = settings;
         this.storage = storage;
-        this.buttons = [...main.querySelectorAll('[data-layout]')];
+        this.buttons = [...(main.ownerDocument ?? main).querySelectorAll('[data-layout]')];
         this.shortcuts = [...main.querySelectorAll('[data-node]')];
         this.onLayoutClick = event => this.apply(event.currentTarget.dataset.layout);
         this.onShortcutClick = event => this.settings.open(event.currentTarget.dataset.node);

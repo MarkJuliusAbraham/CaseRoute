@@ -86,7 +86,7 @@ export class ResultsView {
         this.retry = root.querySelector('[data-retry-period]');
         this.retryStatus = root.querySelector('[data-retry-period-status]');
         this.retryPasses = root.querySelector('[data-retry-passes]');
-        this.connections = root.querySelector('[data-connections]');
+        this.connections = root.querySelector('[data-connections]') ?? document.querySelector('[data-connections]');
     }
 
     render(run) {

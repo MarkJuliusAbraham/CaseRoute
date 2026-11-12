@@ -19,6 +19,7 @@ import { KafkaPanel } from './kafka-panel.js';
 import { canRetry, describeRetry } from './retry-period.js';
 import { ResultsView, totalSent } from './results-view.js';
 import { PRESETS, PRESET_FIELDS, applyPreset } from './run-presets.js';
+import { Tabs } from './tabs.js';
 
 const views = new ViewSwitcher();
 const hints = new Hints();
@@ -28,6 +29,32 @@ if (import.meta.hot) import.meta.hot.dispose(() => pipelineToggle.destroy());
 const shedding = new SheddingControl(document.getElementById('shedding-control'));
 const kafkaPanel = new KafkaPanel(document.getElementById('kafka-card'));
 const results = new ResultsView(document.getElementById('outcomes'));
+// Compact layout: one settings card and one results view at a time. The checker's verdict also shows on its tab.
+const browserStorage = (() => { try { return window.localStorage; } catch { return null; } })();
+new Tabs(document.querySelectorAll('.settings-tabs [data-tab]'), { storage: browserStorage, key: 'caseroute.settingsTab' });
+new Tabs(document.querySelectorAll('.faq-tabs [data-tab]'));
+// Opened from a link such as #faq-kafka: show that part.
+document.querySelector(`.faq-tabs [data-tab="${CSS.escape(location.hash.slice(1))}"]`)?.click();
+const resultsTabs = new Tabs(document.querySelectorAll('.results-tabs [data-tab]'), { storage: browserStorage, key: 'caseroute.resultsTab' });
+// The Pipeline tab exists only on short screens, where the graph, Outcomes and Checker share the space. On a taller
+// screen the graph is always shown beside them, so a remembered Pipeline choice falls back to Outcomes.
+{
+ const shortScreen = window.matchMedia('(min-width: 1100px) and (min-height: 700px) and (max-height: 860px)');
+ const fit = () => { if (!shortScreen.matches && resultsTabs.current === 'traffic-visualization') resultsTabs.show('outcomes'); };
+ shortScreen.addEventListener('change', fit);
+ fit();
+}
+{
+ const verdict = document.querySelector('[data-check-verdict]');
+ const badge = document.querySelector('[data-checker-badge]');
+ const mirror = () => {
+  const text = verdict.textContent.trim();
+  badge.textContent = text && text !== 'Not checked' ? text : '';
+  badge.dataset.verdict = verdict.dataset.verdict ?? '';
+ };
+ new MutationObserver(mirror).observe(verdict, { childList: true, characterData: true, subtree: true, attributes: true });
+ mirror();
+}
 if (import.meta.hot) import.meta.hot.dispose(() => shedding.destroy());
 if (import.meta.hot) import.meta.hot.dispose(() => views.destroy());
 

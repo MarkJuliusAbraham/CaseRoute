@@ -349,3 +349,232 @@ main[data-layout="simple"] .settings-column{display:none}
 .phase-numbers dt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .phase-numbers dd{max-width:200px;overflow-wrap:anywhere}
 .run-bar #download{display:inline-block;margin-top:6px;font-size:12px}.run-bar #download[hidden]{display:none}
+
+/* === Compact layout === */
+/* Tabs instead of stacked cards, and tighter spacing, so a run fits on one screen. */
+.tab-hidden{display:none!important}
+.tab-bar{display:flex;gap:2px;padding:3px;background:#e6eae8;border-radius:9px}
+.tab-bar button{flex:1;width:auto;margin:0;padding:6px 10px;font-size:13px;font-weight:600;background:transparent;color:var(--muted);border:0;border-radius:7px;white-space:nowrap}
+.tab-bar button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgb(25 43 42 / 12%)}
+.tab-bar button:hover:not([aria-selected="true"]){color:var(--ink)}
+.settings-column{display:flex;flex-direction:column;gap:10px}
+.settings-column .settings-grid{gap:0}
+/* Inside the settings dialog (Simple view) a card is always shown. */
+dialog .tab-hidden{display:block!important}
+
+.results-panel{display:flex;flex-direction:column;gap:10px}
+.results-tabs{align-self:flex-start;min-width:280px}
+.tab-badge{margin-left:6px;padding:1px 7px;border-radius:999px;font-size:11px;background:#e1ece6;color:var(--accent)}
+.tab-badge:empty{display:none}
+.tab-badge[data-verdict="DISCREPANCIES"]{background:#f6dedb;color:var(--danger)}
+.tab-badge[data-verdict="PENDING"]{background:#f6ecd6;color:#7a5410}
+
+/* Tighter spacing. */
+main[data-view="simulator"]{padding:14px 24px 24px}
+.layout-switch{margin:0 0 10px}
+.observe-column{gap:12px}
+.card{padding:12px 14px 14px}
+.card-heading{padding-bottom:8px;margin-bottom:8px}
+.card .field{margin-top:6px}
+.form-group-title{margin:12px 0 4px}
+.card .toggle-row{margin-top:4px}
+.card .sub-block{margin-top:10px;padding-top:10px}
+.estimate{margin-top:10px;padding:8px 10px}
+.rate-presets{margin-top:6px}
+.preset-text{margin-top:4px}
+.settings-column input[type="number"],.settings-column input[type="text"]{padding:6px 9px}
+.run-bar{padding:10px 14px}
+.run-bar #run-id{margin-top:6px}
+.observe-column .traffic,.observe-column .results,.observe-column .checker{padding:12px 14px 14px}
+.observe-column .section-heading{padding-bottom:8px;margin-bottom:4px}
+.traffic canvas{height:250px;margin:4px 0 8px}
+.traffic-readouts{margin:4px 0 6px}
+.traffic-readouts>div{padding:7px 10px}
+.traffic-readouts dd{font-size:18px}
+.outcome-bar{margin:8px 0 10px}
+.outcome-legend{margin-bottom:12px}
+.legend-item dd{font-size:20px}
+.phase{padding:10px 12px}
+.check-metrics{margin:10px 0}
+.check-metrics>div{padding:6px 0}
+.check-metrics dd{font-size:18px}
+.checker [data-check-summary]{margin:6px 0}
+/* The tabs already name the view: no second title inside. The hint and the caption stay. */
+.results-panel #results-title,.results-panel #checker-title{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.results-panel .section-heading{border-bottom:0;padding-bottom:0}
+.run-bar .run-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px}
+.run-bar .run-meta #run-id,.run-bar .run-meta #download{margin-top:6px}
+.phase h3{margin-bottom:4px}
+
+/* === One screen === */
+/* On a desktop screen the simulator fits the window exactly: settings on the left, the run bar, the graph (which
+   takes the remaining height) and the results on the right. Nothing scrolls; the documentation still does. */
+header{padding:10px 24px}
+.header-right .layout-switch{display:flex;gap:2px;padding:3px;margin:0;background:#e6eae8;border-radius:9px}
+.header-right .layout-switch button{width:auto;margin:0;padding:5px 12px;font-size:13px;font-weight:600;background:transparent;color:var(--muted);border:0;border-radius:7px}
+.header-right .layout-switch button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgb(25 43 42 / 12%)}
+body:has(#documentation:not([hidden])) .header-right .layout-switch{display:none}
+
+/* Outcomes in one compact block: the bar, then the outcome list and the three groups side by side. */
+.observe-column .results{display:grid;grid-template-columns:200px minmax(0,1fr);column-gap:16px;align-items:start}
+.observe-column .results>.section-heading,.observe-column .results>.outcome-bar{grid-column:1/-1}
+.observe-column .results>.section-heading{justify-content:flex-start;gap:10px;margin:0}
+.observe-column .results>.section-heading .status-line{margin:0}
+.observe-column .outcome-bar{height:12px;margin:6px 0 10px}
+.observe-column .outcome-legend{flex-direction:column;flex-wrap:nowrap;gap:6px;margin:0}
+.observe-column .legend-item dd{font-size:16px}.observe-column .legend-item dt{font-size:11px}
+.observe-column .legend-item .detail{font-size:11px}
+.observe-column .phase-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.observe-column .phase{padding:8px 10px}
+.observe-column .phase h3{font-size:13px}
+.observe-column .phase-numbers{font-size:12.5px;gap:1px 10px}
+.observe-column .phase .status-line{margin:0 0 4px;font-size:11px}
+.observe-column .retry-passes{font-size:11px;margin-top:4px}
+.observe-column .check-metrics{grid-template-columns:repeat(5,minmax(0,1fr));gap:6px 14px;margin:8px 0}
+.observe-column .check-metrics>div{padding:4px 0 0}
+.observe-column .check-metrics dt{font-size:11px}.observe-column .check-metrics dd{font-size:16px;margin-top:1px}
+.observe-column .checker [data-check-summary]{font-size:13px;margin:4px 0}
+.observe-column .checker [data-check-run]{padding:6px 12px;font-size:13px}
+.observe-column .checker details{margin:4px 0}
+
+@media (min-width:1100px) and (min-height:700px){
+ body:has(#service-connections:not([hidden])){height:100vh;overflow:hidden;display:flex;flex-direction:column}
+ body:has(#service-connections:not([hidden])) footer{display:none}
+ main[data-view="simulator"]{flex:1;min-height:0;width:100%;max-width:1680px;padding:12px 20px;display:flex;flex-direction:column}
+ main[data-view="simulator"]>.sim-layout{flex:1;min-height:0;height:100%;grid-template-rows:minmax(0,1fr)}
+ .settings-column{position:static;max-height:none;height:100%;overflow:auto}
+ .observe-column{height:100%;min-height:0;display:flex;flex-direction:column;gap:10px}
+ .run-bar{position:static;flex:none}
+ .observe-column .monitor{flex:1;min-height:0;display:flex;flex-direction:column;gap:10px}
+ .observe-column .traffic{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+ .observe-column .traffic canvas{flex:1 1 0;min-height:230px;height:auto;margin:2px 0 6px}
+ .observe-column .traffic-readouts,.observe-column .traffic meter,.observe-column .node-shortcuts{flex:none}
+ .observe-column .results-panel{flex:none}
+}
+/* Shorter screens: the five pipeline numbers become one line, so the graph keeps its height. */
+@media (min-width:1100px) and (max-height:860px){
+ .observe-column .traffic-readouts>div{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:5px 9px}
+ .observe-column .traffic-readouts dd{font-size:15px;margin:0}
+ .observe-column .traffic-status{margin:2px 0 4px}
+ .observe-column .run-bar #retry-status{display:none}
+}
+
+/* === One screen, tightened === */
+@media (min-width:1100px) and (min-height:700px){
+ .observe-column .run-bar .run-meta{flex-wrap:nowrap}
+ .observe-column .run-bar #run-id{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:0}
+ .observe-column .run-bar #download{flex:none}
+ /* Its words repeat the Retry period card; the Retry now button stays. */
+ .observe-column .run-bar #retry-status{display:none}
+ /* The five pipeline numbers: one line. */
+ .observe-column .traffic-readouts{gap:8px;margin:2px 0 0}
+ .observe-column .traffic-readouts>div{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:5px 9px}
+ .observe-column .traffic-readouts dd{font-size:15px;margin:0;white-space:nowrap}
+ .observe-column .traffic-readouts dt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .observe-column .traffic .section-heading{margin-bottom:0}
+ .observe-column .traffic-status{margin:0}
+ .observe-column .traffic canvas{min-height:200px}
+ /* Outcomes: heading, bar, the outcome list in one row, then the three groups. */
+ .observe-column .results{grid-template-columns:minmax(0,1fr)}
+ .observe-column .outcome-legend{flex-direction:row;flex-wrap:wrap;gap:4px 26px;margin:0 0 8px}
+ .observe-column .legend-item dd{font-size:15px}
+ .observe-column .legend-item .detail{display:inline;margin-left:8px}
+ .observe-column .phase-numbers{font-size:12px;line-height:1.35}
+ .observe-column .phase h3{margin:0 0 2px}
+ .observe-column .results-tabs{min-width:240px}
+ .observe-column .tab-bar button{padding:4px 10px}
+}
+
+/* === Three areas === */
+/* Desktop: settings | pipeline (full height) | results. The run bar spans the pipeline and the results. */
+@media (min-width:1100px) and (min-height:700px){
+ .observe-column .monitor{display:grid;grid-template-columns:minmax(0,1fr) clamp(330px,26vw,420px);gap:10px;flex:1;min-height:0}
+ .observe-column .traffic{min-height:0;height:100%}
+ .observe-column .traffic canvas{flex:1 1 0;min-height:0}
+ .observe-column .traffic-readouts{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+ .observe-column .results-panel{min-height:0;height:100%;display:flex;flex-direction:column}
+ .observe-column .results-tabs{align-self:stretch;min-width:0}
+ .observe-column .results-panel>.results,.observe-column .results-panel>.checker{flex:1;min-height:0;overflow:auto}
+ /* Outcomes, stacked for the narrow column. */
+ .observe-column .outcome-legend{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px}
+ .observe-column .legend-item .detail{display:block;margin-left:0}
+ .observe-column .phase-grid{grid-template-columns:minmax(0,1fr);gap:8px}
+ .observe-column .check-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+/* === Connections strip === */
+/* Under the pipeline numbers: one line with the connection pool's three counts. */
+.connections-strip{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px;padding:5px 9px;border:1px solid var(--line);border-radius:8px;background:#f6f8f7}
+.connections-strip .toggle-row{margin:0}
+.connections-strip h3{font-size:12px;margin:0;white-space:nowrap}
+.connections-strip .phase-numbers{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0;font-size:12px}
+.connections-strip .phase-numbers div{display:flex;gap:6px;align-items:baseline}
+.connections-strip .phase-numbers dd{max-width:none}
+.connections-strip .phase-numbers:empty::before{content:"Shown once a run starts."}
+@media (min-width:1100px) and (min-height:700px){
+ .observe-column .traffic-readouts{grid-template-columns:repeat(auto-fit,minmax(165px,1fr))}
+ .observe-column .connections-strip{flex:none}
+ .observe-column .results>.section-heading .status-line{font-size:11px}
+ .observe-column .phase{padding:7px 10px}
+}
+
+/* === Short screens === */
+/* The Pipeline tab is only for short screens; elsewhere the graph is always visible. */
+.results-tabs .short-screen-tab{display:none}
+.monitor #traffic-visualization.tab-hidden{display:block!important}
+@media (min-width:1100px) and (min-height:700px){
+ .observe-column .monitor #traffic-visualization.tab-hidden{display:flex!important}
+}
+/* Up to 860 px tall: Pipeline, Outcomes and Checker are tabs sharing the right side, each with the full height. */
+@media (min-width:1100px) and (min-height:700px) and (max-height:860px){
+ .results-tabs .short-screen-tab{display:block}
+ .observe-column .monitor{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);grid-template-areas:"tabs" "view"}
+ .observe-column .results-panel{display:contents}
+ .observe-column .results-tabs{grid-area:tabs;justify-self:start;width:min(100%,460px);align-self:start}
+ .observe-column .traffic,.observe-column .results-panel>.results,.observe-column .results-panel>.checker{grid-area:view;min-height:0}
+ .observe-column .monitor #traffic-visualization.tab-hidden{display:none!important}
+ /* With the full width, Outcomes and the checker spread out again. */
+ .observe-column .outcome-legend{display:flex;flex-wrap:wrap;gap:4px 26px}
+ .observe-column .legend-item .detail{display:inline;margin-left:8px}
+ .observe-column .phase-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .observe-column .check-metrics{grid-template-columns:repeat(5,minmax(0,1fr))}
+ .observe-column .traffic-readouts{grid-template-columns:repeat(5,minmax(0,1fr))}
+ /* A little less padding in the settings column. */
+ .settings-column .card{padding:10px 12px 12px}
+ .settings-column .card-heading{padding-bottom:6px;margin-bottom:6px}
+ .settings-column .form-group-title{margin:10px 0 3px}
+}
+@media (min-width:1100px) and (min-height:700px) and (max-height:860px){
+ .settings-column .card .field{margin-top:4px}
+ .settings-column .estimate{margin-top:8px;padding:6px 9px}
+ .settings-column .rate-presets{margin-top:4px}
+}
+/* Pipeline numbers: label above value, so neither is ever cut short. */
+@media (min-width:1100px) and (min-height:700px){
+ .observe-column .traffic-readouts>div{display:block;padding:4px 9px}
+ .observe-column .traffic-readouts dt{white-space:nowrap;overflow:visible}
+ .observe-column .traffic-readouts dd{font-size:15px;line-height:1.25}
+}
+/* Outcomes and checker content start at the top of their card instead of spreading over its height. */
+.observe-column .results,.observe-column .checker{align-content:start}
+.docs-code{margin:6px 0 10px;padding:10px 12px;background:#eef1ef;border:1px solid var(--line);border-radius:8px;font:12.5px/1.5 Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink)}
+/* A hidden view stays hidden, whatever layout rules apply to it. */
+main[hidden]{display:none!important}
+
+/* === Documentation pages === */
+/* One section at a time, like pages, with Previous and Next at the end. */
+.docs-content>section{border-bottom:0;margin-bottom:0;padding-bottom:12px}
+.docs-content>section[hidden]{display:none}
+.docs-pager{display:flex;justify-content:space-between;gap:16px;margin-top:36px;padding-top:18px;border-top:1px solid var(--line)}
+.docs-pager a{display:flex;flex-direction:column;gap:2px;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);text-decoration:none;min-width:200px}
+.docs-pager a:hover{border-color:var(--accent)}
+.docs-pager a span{font-size:12px;color:var(--muted)}.docs-pager a strong{font-size:15px;color:var(--accent)}
+.docs-pager .next{margin-left:auto;text-align:right}
+.faq-tabs{margin:14px 0 4px;max-width:640px}
+.faq-group>h3{margin-top:18px}
+/* === Fixed header === */
+/* The header stays at the top while a documentation page scrolls; the docs menu stays just below it, and links to a
+   spot inside a page land below the header instead of under it. */
+header{position:sticky;top:0;z-index:20}
+.docs-nav{top:68px}
+.docs-content section,.docs-content [id]{scroll-margin-top:68px}

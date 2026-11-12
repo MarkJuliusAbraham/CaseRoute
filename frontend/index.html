@@ -2,11 +2,11 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CaseRoute · Traffic generator</title><script type="module" src="/src/main.js"></script></head>
 <body>
-<header><a href="/" class="brand">CaseRoute <span>/ Traffic generator</span></a><div class="header-right"><span id="connection">Local environment</span><nav class="view-tabs" aria-label="Views"><a href="#" data-view-tab="simulator">Simulator</a><a href="#docs" data-view-tab="docs">Documentation</a></nav></div></header>
+<header><a href="/" class="brand">CaseRoute <span>/ Traffic generator</span></a><div class="header-right"><span id="connection">Local environment</span><div class="layout-switch" role="group" aria-label="Layout"><button type="button" data-layout="simple" aria-pressed="false">Simple</button><button type="button" data-layout="panel" aria-pressed="true">Panel</button></div><nav class="view-tabs" aria-label="Views"><a href="#" data-view-tab="simulator">Simulator</a><a href="#docs" data-view-tab="docs">Documentation</a></nav></div></header>
 <main id="service-connections" data-view="simulator">
-<div class="layout-switch" role="group" aria-label="Layout"><button type="button" data-layout="simple" aria-pressed="false">Simple view</button><button type="button" data-layout="panel" aria-pressed="true">Panel view</button><span class="layout-hint" data-simple-only>Click a box in the graph to change its settings.</span></div>
 <div class="sim-layout">
 <aside class="settings-column" aria-label="Settings">
+<div class="tab-bar settings-tabs" role="tablist" aria-label="Settings for"><button type="button" data-tab="generator-card">Generator</button><button type="button" data-tab="backend-card">Backend</button><button type="button" data-tab="processor-card">Processor</button><button type="button" data-tab="kafka-card">Kafka</button></div>
 <section class="settings-grid" aria-label="Service settings">
 
 <section id="generator-card" class="card" aria-labelledby="generator-title">
@@ -101,9 +101,8 @@
 <div class="run-actions"><button id="start" type="submit" form="run-form" disabled>Start run</button><button id="stop" type="button" class="secondary" disabled>Stop</button><button id="retry-now" type="button" class="secondary" disabled>Retry now</button><button type="button" class="hint" aria-expanded="false" aria-controls="hint-run" aria-label="About run controls">i</button><span id="hint-run" class="hint-text" role="note" hidden>One run at a time. Stop ends new submissions and lets waiting ones finish. Retry now starts a retry period: it sends every submission still skipped, blocked or unknown again, after the run.</span></div>
 <div class="inspect-actions" aria-label="Inspect run data"><button id="view-cases" type="button" class="secondary" aria-haspopup="dialog">Received cases</button><button id="view-responses" type="button" class="secondary" aria-haspopup="dialog">Recent responses</button><button id="view-health" type="button" class="secondary" aria-haspopup="dialog">Health history</button></div>
 </div>
-<p id="run-id" class="identifier">No run started.</p>
+<div class="run-meta"><p id="run-id" class="identifier">No run started.</p><a id="download" hidden>Download run report (.jsonl)</a></div>
 <p id="retry-status" class="status-line" role="status"></p>
-<a id="download" hidden>Download run report (.jsonl)</a>
 </section>
 
 <section class="monitor" aria-labelledby="traffic-title">
@@ -111,9 +110,12 @@
 <div class="section-heading"><h2 id="traffic-title">Pipeline</h2><div class="toggle-row"><p class="traffic-status" data-traffic-status>Waiting for a run</p><button type="button" class="hint" aria-expanded="false" aria-controls="hint-traffic" aria-label="About the pipeline view">i</button><span id="hint-traffic" class="hint-text hint-left" role="note" hidden><span data-chart-note>Animation only: dots show submission attempts, not measured travel or confirmed arrival. At high rates, dots represent groups.</span> The numbers are measured: replies from the generator, saved and processed cases from the backend every second.</span></div></div>
 <canvas role="img" aria-label="Request pipeline: Generator to Backend, then either through Kafka to PostgreSQL or directly to PostgreSQL, then to the Processor. Counts show requests sent, accepted replies, messages waiting in Kafka, cases saved, and cases processed."></canvas>
 <div class="node-shortcuts" data-simple-only role="group" aria-label="Component settings"><span>Settings:</span><button type="button" class="secondary" data-node="generator">Generator</button><button type="button" class="secondary" data-node="backend">Backend</button><button type="button" class="secondary" data-node="kafka">Kafka</button><button type="button" class="secondary" data-node="database">PostgreSQL</button><button type="button" class="secondary" data-node="processor">Processor</button></div>
-<dl class="traffic-readouts"><div><dt>Observed requests / min</dt><dd data-rate>&mdash;</dd></div><div><dt>Configured requests / min</dt><dd data-target>&mdash;</dd></div><div><dt>In flight / capacity</dt><dd data-density>0 / &mdash;</dd></div><div><dt>Waiting in Kafka</dt><dd data-backlog>&mdash;</dd></div><div><dt>Waiting for processing</dt><dd data-processing-backlog>&mdash;</dd></div></dl>
+<dl class="traffic-readouts"><div><dt>Sent / min (now)</dt><dd data-rate>&mdash;</dd></div><div><dt>Target / min</dt><dd data-target>&mdash;</dd></div><div><dt>In flight</dt><dd data-density>0 / &mdash;</dd></div><div><dt>Waiting in Kafka</dt><dd data-backlog>&mdash;</dd></div><div><dt>Awaiting processing</dt><dd data-processing-backlog>&mdash;</dd></div></dl>
+<section class="phase connections-strip" aria-labelledby="phase-connections-title"><div class="toggle-row"><h3 id="phase-connections-title">Connections</h3><button type="button" class="hint" aria-expanded="false" aria-controls="hint-connections" aria-label="About connections">i</button><span id="hint-connections" class="hint-text hint-left" role="note" hidden>Jetty only. The generator keeps a fixed pool of connections to the backend. In a healthy run with a warm-up, none are opened or closed after it; any that are, are being replaced, and each holds a port for 2 minutes.</span></div><dl class="phase-numbers" data-connections></dl></section>
 <meter data-capacity min="0" max="1" value="0" aria-label="Generator in-flight capacity utilization"></meter>
 </section>
+<section class="results-panel" aria-label="Results">
+<div class="tab-bar results-tabs" role="tablist" aria-label="Results"><button type="button" class="short-screen-tab" data-tab="traffic-visualization">Pipeline</button><button type="button" data-tab="outcomes">Outcomes</button><button type="button" data-tab="checker">Checker <span class="tab-badge" data-checker-badge></span></button></div>
 <section id="outcomes" class="results" aria-labelledby="results-title">
 <div class="section-heading"><div class="toggle-row"><h2 id="results-title">Outcomes</h2><button type="button" class="hint" aria-expanded="false" aria-controls="hint-outcomes" aria-label="About the outcomes">i</button><span id="hint-outcomes" class="hint-text" role="note" hidden><strong>Accepted</strong>: a matching 202 (stored in Kafka) or 201 (saved). <strong>No definite answer</strong>: skipped (never sent: the in-flight limit or the HTTP client's waiting line was full, the connection was refused, or sending was paused because the backend was down), blocked (backend busy, nothing stored) or unknown (timeout, connection error or 5xx; the case may still exist). These are what a retry period sends again. <strong>Rejected</strong>: a definite no (4xx or an unexpected reply). <strong>Not sent</strong>: still planned when the run was stopped.</span></div><p class="status-line" data-outcome-caption></p></div>
 <div class="outcome-bar" data-outcome-bar role="img" aria-label="No run yet"></div>
@@ -121,7 +123,7 @@
 <div class="phase-grid">
 <section class="phase" aria-labelledby="phase-run-title"><h3 id="phase-run-title">During the run</h3><dl class="phase-numbers" data-during-run></dl></section>
 <section class="phase" aria-labelledby="phase-retry-title"><div class="toggle-row"><h3 id="phase-retry-title">Retry period</h3><button type="button" class="hint" aria-expanded="false" aria-controls="hint-phase-retry" aria-label="About the retry period">i</button><span id="hint-phase-retry" class="hint-text" role="note" hidden>After the run, every submission with no definite answer is sent again with its original ID, in passes, until none is left, the time limit, 10 passes, a pass that changes nothing, or Stop. Turn it on in the Generator settings, or press Retry now.</span></div><p class="status-line" data-retry-period-status></p><dl class="phase-numbers" data-retry-period></dl><ol class="retry-passes" data-retry-passes hidden></ol></section>
-<section class="phase" aria-labelledby="phase-connections-title"><div class="toggle-row"><h3 id="phase-connections-title">Connections</h3><button type="button" class="hint" aria-expanded="false" aria-controls="hint-connections" aria-label="About connections">i</button><span id="hint-connections" class="hint-text hint-left" role="note" hidden>Jetty only. The generator keeps a fixed pool of connections to the backend. In a healthy run with a warm-up, none are opened or closed after it; any that are, are being replaced, and each holds a port for 2 minutes.</span></div><dl class="phase-numbers" data-connections></dl></section>
+
 </div>
 </section>
 <section id="checker" class="checker" aria-labelledby="checker-title">
@@ -130,6 +132,7 @@
 <dl class="metrics check-metrics" data-check-results hidden></dl>
 <details data-check-examples hidden><summary>Example client request IDs</summary><ul></ul></details>
 <button type="button" class="secondary" data-check-run disabled>Check run</button>
+</section>
 </section>
 </section>
 </div>
@@ -172,7 +175,7 @@
 </dialog>
 </main>
 <main id="documentation" class="docs" data-view="docs" hidden>
-<nav class="docs-nav" aria-label="Documentation sections"><a href="#docs-overview">Overview</a><a href="#docs-faq">Architecture FAQ</a><a href="#docs-findings">Load test findings</a><a href="#docs-frontend">Frontend</a><a href="#docs-generator">Generator</a><a href="#docs-backend">Backend</a><a href="#docs-processor">Processor</a><a href="#docs-infrastructure">Kafka &amp; PostgreSQL</a></nav>
+<nav class="docs-nav" aria-label="Documentation sections"><a href="#docs-overview">Overview</a><a href="#docs-faq">Architecture FAQ</a><a href="#docs-findings">Load test findings</a><a href="#docs-frontend">Frontend</a><a href="#docs-generator">Generator</a><a href="#docs-backend">Backend</a><a href="#docs-processor">Processor</a><a href="#docs-infrastructure">Kafka &amp; PostgreSQL</a><a href="#docs-tools">Kafka UI &amp; pgAdmin</a></nav>
 <div class="docs-content">
 
 <section id="docs-overview" aria-labelledby="docs-overview-title">
@@ -205,8 +208,9 @@
 <section id="docs-faq" aria-labelledby="docs-faq-title">
 <h2 id="docs-faq-title">Architecture FAQ</h2>
 <p>Organised by component. For each: what it is for, then every lever it has: where it is set (the dashboard, or a property for the next restart), what it trades, and what was measured here. Defaults are in brackets.</p>
-<p class="docs-faq-index"><a href="#faq-generator">Generator</a> · <a href="#faq-backend">Backend</a> · <a href="#faq-kafka">Kafka</a> · <a href="#faq-processing">Processing</a> · <a href="#faq-across-the-system">Across the system</a></p>
-<h3 id="faq-generator">Generator</h3>
+<div class="tab-bar faq-tabs" role="tablist" aria-label="FAQ by component"><button type="button" data-tab="faq-generator">Generator</button><button type="button" data-tab="faq-backend">Backend</button><button type="button" data-tab="faq-kafka">Kafka</button><button type="button" data-tab="faq-processing">Processing</button><button type="button" data-tab="faq-across-the-system">Across the system</button></div>
+<div class="faq-group" id="faq-generator" role="tabpanel">
+<h3>Generator</h3>
 <p>Plays the customers: sends submissions on a fixed schedule, records what each was told, and checks the result.</p>
 <dl class="docs-faq">
 <dt>What is the generator for, and why is it open-loop?</dt><dd>It models real customers, who keep submitting whatever the backend's speed. It never waits for replies before sending the next submission, so overload shows up as it would in production: as slow replies, skips and unknown outcomes, not as a politely slower test. It also holds the client's side of the record, which is why the checker lives here.</dd>
@@ -223,7 +227,9 @@
 <dt>Duplicate submissions</dt><dd>Dashboard [0%]. Sends up to 50% of submissions a second time with the same ID and content, 0–2 s later, like a double click. Tests the system's idempotency; the checker verifies each still has one case, processed once.</dd>
 <dt>Intake path and Connection test</dt><dd>Dashboard (Backend card) [through Kafka]. Chooses the endpoint the generator calls: <code>POST /api/cases</code> (Kafka, 202), <code>/direct</code> (saved before the reply, 201), or <code>/noop</code> (instant 202, nothing stored). The connection test measures the generator and the backend's web server alone: about 15,000 per second from the generator, 25,210 from the native tool <code>oha</code>.</dd>
 </dl>
-<h3 id="faq-backend">Backend</h3>
+</div>
+<div class="faq-group" id="faq-backend" role="tabpanel">
+<h3>Backend</h3>
 <p>The only writer of PostgreSQL: accepts submissions, saves them, hands them to processing through the outbox, and records results.</p>
 <dl class="docs-faq">
 <dt>What is the backend for, and where does it wait?</dt><dd>It turns a submission into a promise (202 after Kafka confirms) and later into a case. Each intake request waits for Kafka's confirmation, so the backend's capacity is about how many requests can wait at once and how fast confirmations come back, not about CPU: it used 3–4 of 20 cores at its ceiling.</dd>
@@ -237,7 +243,9 @@
 <dt>Case writer (<code>spring.kafka.listener.concurrency</code>, <code>max-poll-records</code>)</dt><dd>Config [3 consumers, 500 per batch]. Reads <code>cases.submitted</code> and saves each batch in one statement, duplicates ignored. Three consumers means more than 3 partitions add no saving parallelism.</dd>
 <dt>Outbox relay (<code>caseroute.outbox.batch-size</code>, <code>poll-interval-ms</code>)</dt><dd>Config [batches of 1,000, every 100 ms]. Publishes saved-case events to <code>cases.saved</code>; while batches come back full it keeps going instead of waiting for the next tick. Bigger batches mean fewer round trips to PostgreSQL and Kafka. The dashboard's "awaiting relay" count shows it falling behind.</dd>
 </dl>
-<h3 id="faq-kafka">Kafka</h3>
+</div>
+<div class="faq-group" id="faq-kafka" role="tabpanel">
+<h3>Kafka</h3>
 <p>The durable buffer between every stage: the promise behind a 202, and the backlog when a later stage is slower or paused.</p>
 <dl class="docs-faq">
 <dt>What is Kafka for here?</dt><dd>It decouples speeds. Intake only needs Kafka's confirmation; saving and processing read at their own pace. One broker in Docker; topics <code>cases.submitted</code>, <code>cases.saved</code>, <code>cases.processed</code>, <code>cases.warmup</code> and <code>.DLT</code> topics for unreadable messages. Measured: the broker took 185,528 confirmed writes per second on its own, so it is not the limit.</dd>
@@ -250,7 +258,9 @@
 <dt>Retention (<code>caseroute.kafka.retention</code>, <code>segment</code>)</dt><dd>Config [6 h, 1-hour segments; warm-up 1 h]. How long messages stay, read or not. Long enough to replay a run's backlog, short enough that load tests do not fill the disk.</dd>
 <dt>Live producer metrics: how do I read them?</dt><dd>Kafka panel. High "waiting in producer" with requests in flight at the cap: the producer is the bottleneck. High "broker confirmation" with the broker idle: the time is lost between the producer and the broker. Measured: confirmations grew from ~5 ms to ~150 ms under load while Kafka's CPU stayed low; a recording traced it to the producer's network thread blocked on a lock in Java's Windows networking code (about 25% of the time).</dd>
 </dl>
-<h3 id="faq-processing">Processing</h3>
+</div>
+<div class="faq-group" id="faq-processing" role="tabpanel">
+<h3>Processing</h3>
 <p>The slow, failure-prone downstream system: turns a saved case into a routed or failed one, through Kafka only.</p>
 <dl class="docs-faq">
 <dt>What is the processor for, and why is it separate?</dt><dd>It models real downstream work with its own speed and failures, so the rest of the system must tolerate both. It has no database access: it reads <code>cases.saved</code>, works, and publishes to <code>cases.processed</code>; the backend records the result, only on a case still OPEN, and counts every result it receives.</dd>
@@ -259,7 +269,9 @@
 <dt>Process after intake</dt><dd>Dashboard [on]. Pauses fetching from <code>cases.saved</code>; cases in progress finish and the backlog waits in Kafka. Driven together with the backend's pause.</dd>
 <dt>Failure handling</dt><dd>Not a lever but a design choice: transient errors are retried inside the processor; permanent failures produce a FAILED result and a copy in <code>cases.saved.DLT</code>. A duplicate result is harmless for the case, and visible to the checker as "processed more than once".</dd>
 </dl>
-<h3 id="faq-across-the-system">Across the system</h3>
+</div>
+<div class="faq-group" id="faq-across-the-system" role="tabpanel">
+<h3>Across the system</h3>
 <p>Promises that no single component keeps alone.</p>
 <dl class="docs-faq">
 <dt>What does a 202 promise, and how is it checked?</dt><dd>That the submission is durably in Kafka and will become a case. The checker's "Accepted but missing" counts broken promises and must be 0; "Unknown, saved anyway" shows replies that were lost while the case was not.</dd>
@@ -269,6 +281,7 @@
 <dt>What is deliberately not production-grade?</dt><dd>One Kafka broker with replication factor 1: while it is down, intake stops (503, Unknown to the client), and losing its disk would lose accepted submissions not yet saved. One backend instance. Everything, including the load generator, on one Windows machine. Connections never closed for being idle. No authentication. Schema managed by Hibernate (<code>ddl-auto=update</code>), not migrations.</dd>
 <dt>How would it scale beyond one machine?</dt><dd>Several backend instances behind a load balancer, each with its own producers. A Kafka cluster with replication 3 and <code>min.insync.replicas=2</code>. More partitions together with more consumers. The load generator on separate machines. Servers on Linux.</dd>
 </dl>
+</div>
 </section>
 
 <section id="docs-findings" aria-labelledby="docs-findings-title">
@@ -451,7 +464,7 @@
 <tr><td><code>cases.warmup</code></td><td>6</td><td>Warm-up endpoint → nobody (kept 1 hour)</td></tr>
 <tr><td><code>*.DLT</code></td><td>1</td><td>Unreadable or failed messages, for inspection</td></tr>
 </tbody></table>
-<p>Producers use <code>acks=all</code> with idempotence. Kafka UI: <code>localhost:8082</code>.</p>
+<p>Producers use <code>acks=all</code> with idempotence. To look inside Kafka, see <a href="#docs-tools">Kafka UI &amp; pgAdmin</a>.</p>
 <h3>Kafka panel</h3>
 <p>Changes apply between runs only: the panel locks during a run, and the backend refuses changes while submissions are waiting for Kafka (409).</p>
 <ul>
@@ -460,10 +473,58 @@
 <li><strong>Producer, live</strong> (<code>GET /api/simulation/kafka/metrics</code>): the intake producer's own metrics over the last ~10 s. Time waiting in the producer points at batching or the in-flight limit; time waiting for the broker's confirmation points at Kafka itself.</li>
 </ul>
 <h3>PostgreSQL</h3>
-<p>Database <code>caseroutedb</code> on <code>localhost:5432</code>; pgAdmin on <code>localhost:5050</code>.</p>
+<p>Database <code>caseroutedb</code> on <code>localhost:5432</code>. To look inside it, see <a href="#docs-tools">Kafka UI &amp; pgAdmin</a>.</p>
 <dl class="docs-terms">
 <dt>cases</dt><dd>One row per case; unique <code>client_request_id</code>, indexed <code>test_run_id</code>, status plus the processor's result columns and <code>results_received</code> (processing results that arrived; 1 when processed once).</dd>
 <dt>outbox</dt><dd>"Case saved" events waiting to be published. Normally near empty; a growing count means the relay is behind.</dd>
+</dl>
+</section>
+
+<section id="docs-tools" aria-labelledby="docs-tools-title">
+<h2 id="docs-tools-title">Kafka UI &amp; pgAdmin</h2>
+<p>Two browser tools run in Docker next to Kafka and PostgreSQL, for looking inside them. Both only listen on this machine, and both are already running whenever the Compose stack is up. To start or stop just them:</p>
+<pre class="docs-code">docker compose up -d kafka-ui pgadmin
+docker compose stop kafka-ui pgadmin</pre>
+<table class="docs-table"><thead><tr><th scope="col">Tool</th><th scope="col">Address</th><th scope="col">Login</th></tr></thead><tbody>
+<tr><td>Kafka UI (Kafbat)</td><td><a href="http://localhost:8082" target="_blank" rel="noopener">localhost:8082</a></td><td>None</td></tr>
+<tr><td>pgAdmin</td><td><a href="http://localhost:5050" target="_blank" rel="noopener">localhost:5050</a></td><td>Web login <code>admin@caseroute.dev</code> / <code>localdev</code>; database password <code>localdev</code></td></tr>
+</tbody></table>
+
+<h3>Kafka UI: what is waiting in Kafka, and what is behind</h3>
+<ol class="docs-flow">
+<li>Open <code>localhost:8082</code> and pick the <strong>CaseRoute</strong> cluster (one broker).</li>
+<li><strong>Topics</strong> lists <code>cases.submitted</code>, <code>cases.saved</code>, <code>cases.processed</code>, <code>cases.warmup</code> and the <code>.DLT</code> topics, with partition and message counts. Topics starting with <code>__</code> are Kafka's own.</li>
+<li>Open a topic and its <strong>Messages</strong> tab to read messages: the key is the submission's <code>clientRequestId</code> (<code>cases.submitted</code>) or the case ID (<code>cases.saved</code>, <code>cases.processed</code>), the value is the JSON. Use the search box to find one key, or seek by timestamp to jump to a run.</li>
+<li><strong>Consumers</strong> shows each consumer group and its <strong>lag</strong> per partition, the number of messages not yet read:
+<ul><li><code>case-writer</code>: submissions not yet saved to PostgreSQL ("Waiting in Kafka" on the dashboard).</li>
+<li><code>case-processor</code>: saved cases not yet picked up by the processor.</li>
+<li><code>case-result-writer</code>: processing results not yet recorded.</li></ul>
+After a run, every lag should fall to 0. A lag that stays put means that stage is stopped or paused ("Process after intake" unticked).</li>
+<li>The <code>.DLT</code> topics hold messages that could not be used: unreadable submissions, failed cases (with the reason in a header), unusable results. Normally empty or tiny.</li>
+</ol>
+<p class="note">Read freely, even during a run. Do not delete topics or messages while the backend or processor is running: they would recreate a deleted topic with 1 partition. Partitions are changed from the dashboard's Kafka panel.</p>
+
+<h3>pgAdmin: what is stored</h3>
+<ol class="docs-flow">
+<li>Open <code>localhost:5050</code> and log in with <code>admin@caseroute.dev</code> / <code>localdev</code>. This is pgAdmin's own account, not the database's.</li>
+<li>In the tree on the left: <strong>Servers → CaseRoute → CaseRoute PostgreSQL</strong>. It is already registered. When asked for the password, enter <code>localdev</code> (database user <code>caseroutedb</code>); tick "Save password" to skip this next time.</li>
+<li><strong>Databases → caseroutedb → Schemas → public → Tables</strong> has <code>cases</code> and <code>outbox</code>. Right-click a table, then <strong>View/Edit Data → First 100 Rows</strong> to browse it.</li>
+<li>For anything more, select <code>caseroutedb</code> and open <strong>Tools → Query Tool</strong>, type a query and press F5 (or the run button).</li>
+</ol>
+<p>Useful queries. Run IDs appear in the run bar ("Run &lt;id&gt;"); client request IDs in Recent responses and the checker's examples.</p>
+<dl class="docs-terms"><dt>Cases of one run, by status (copy the run ID from the run bar)</dt><dd><pre class="docs-code">SELECT status, count(*) FROM cases
+WHERE test_run_id = '&lt;run id&gt;'
+GROUP BY status;</pre></dd><dt>One submission, by the ID the generator sent</dt><dd><pre class="docs-code">SELECT * FROM cases WHERE client_request_id = '&lt;client request id&gt;';</pre></dd><dt>Cases processed more than once (should be 0)</dt><dd><pre class="docs-code">SELECT count(*) FROM cases
+WHERE test_run_id = '&lt;run id&gt;' AND results_received > 1;</pre></dd><dt>Saved cases still waiting to be handed to processing</dt><dd><pre class="docs-code">SELECT count(*) FROM outbox;</pre></dd><dt>The latest runs and their sizes</dt><dd><pre class="docs-code">SELECT test_run_id, count(*) AS cases, min(created_at) AS first, max(created_at) AS last
+FROM cases GROUP BY test_run_id ORDER BY last DESC LIMIT 10;</pre></dd></dl>
+<p class="note">Reading is safe, but a query that scans a million-row table during a run competes with the backend for the database; prefer filtering by <code>test_run_id</code>, which is indexed. To delete cases, use the dashboard's <strong>Clear saved cases</strong>, which also clears the outbox, rather than deleting rows by hand. <code>flyway_schema_history</code> is left over from an earlier setup and unused.</p>
+
+<h3>If something does not work</h3>
+<dl class="docs-terms">
+<dt>Kafka UI shows the cluster as offline</dt><dd>Kafka is still starting (it has a health check; Kafka UI starts after it). Wait a few seconds and reload.</dd>
+<dt>pgAdmin has no CaseRoute server</dt><dd>The server list is imported only the first time pgAdmin starts with an empty data volume. Add it by hand: host <code>postgres</code>, port 5432, database and user <code>caseroutedb</code>. Inside Docker the host is <code>postgres</code>, not <code>localhost</code>.</dd>
+<dt>pgAdmin: "password authentication failed"</dt><dd>That is the database password: <code>localdev</code>. The web login is a separate account.</dd>
+<dt>Changed the pgAdmin login in <code>compose.yaml</code> and nothing happened</dt><dd>The account is kept in the <code>pgadmin_data</code> volume and is created only once. Remove that volume to start over.</dd>
 </dl>
 </section>
 </div>
